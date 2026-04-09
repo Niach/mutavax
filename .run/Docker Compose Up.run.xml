@@ -1,0 +1,15 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Docker Compose Up" type="docker-compose" nameIsGenerated="false" server-name="Docker">
+    <deployment type="docker-compose.deployment">
+      <settings>
+        <option name="composePaths">
+          <list>
+            <option value="$PROJECT_DIR$/docker-compose.yml" />
+          </list>
+        </option>
+        <option name="commandLine" value="--build" />
+      </settings>
+    </deployment>
+    <method v="2" />
+  </configuration>
+</component>

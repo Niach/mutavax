@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>cancerstudio</title>
+    <meta
+      name="description"
+      content="Two DNA samples in, mRNA vaccine out. cancerstudio is an open pipeline for designing personalized cancer vaccines."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <!-- Hero -->
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">cancerstudio</p>
+          <h1>Two DNA samples in. One mRNA vaccine out.</h1>
+          <p class="lede">
+            Give it tumor DNA and normal DNA. The pipeline finds what mutated,
+            predicts what the immune system can target, and designs a
+            personalized mRNA vaccine. For humans, dogs, and cats.
+          </p>
+          <div class="hero-actions">
+            <a href="#how-it-works" class="button button-primary"
+              >See how it works</a
+            >
+            <a
+              href="https://x.com/paul_conyngham/status/2036940410363535823"
+              class="button button-secondary"
+              target="_blank"
+              rel="noreferrer"
+            >
+              The story behind this
+            </a>
+          </div>
+        </div>
+
+        <div class="hero-panel">
+          <div class="metric-card">
+            <span class="metric-label">The idea</span>
+            <strong>Compare. Predict. Design.</strong>
+            <p>
+              Compare tumor vs normal DNA, find somatic mutations, predict which
+              ones the immune system can see, and design an mRNA construct
+              targeting them.
+            </p>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label metric-label-navy">Early stage</span>
+            <strong>Ingestion works. The rest is coming.</strong>
+            <p>
+              File upload and normalization are live. Alignment, variant calling,
+              and everything downstream is being built stage by stage.
+            </p>
+          </div>
+        </div>
+      </header>
+
+      <main>
+        <!-- App preview: Create workspace -->
+        <section class="section" id="how-it-works">
+          <div class="section-heading">
+            <p class="eyebrow">Step one</p>
+            <h2>Start a workspace. Pick a species.</h2>
+          </div>
+
+          <div class="app-frame">
+            <div class="app-chrome">
+              <div class="traffic-lights">
+                <span class="dot dot-red"></span>
+                <span class="dot dot-yellow"></span>
+                <span class="dot dot-green"></span>
+              </div>
+              <div class="url-bar">localhost:3000</div>
+            </div>
+            <div class="app-body app-body-light">
+              <div class="mock-create-card">
+                <h3 class="mock-card-title">New workspace</h3>
+                <div class="species-grid">
+                  <button class="species-btn" type="button">
+                    <svg
+                      class="species-icon"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <circle cx="12" cy="8" r="5" />
+                      <path d="M20 21a8 8 0 1 0-16 0" />
+                    </svg>
+                    <span>Human</span>
+                  </button>
+                  <button class="species-btn species-btn-active" type="button">
+                    <svg
+                      class="species-icon"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path
+                        d="M10 5.172C10 3.782 8.423 2.679 6.5 3c-2.823.47-4.113 6.006-4 7 .08.703 1.725 1.722 3.656 1 1.261-.472 1.96-1.45 2.344-2.5"
+                      />
+                      <path
+                        d="M14.267 5.172c0-1.39 1.577-2.493 3.5-2.172 2.823.47 4.113 6.006 4 7-.08.703-1.725 1.722-3.656 1-1.261-.472-1.855-1.45-2.239-2.5"
+                      />
+                      <path d="M8 14v.5" />
+                      <path d="M16 14v.5" />
+                      <path d="M11.25 16.25h1.5L12 17l-.75-.75Z" />
+                      <path
+                        d="M4.42 11.247A13.152 13.152 0 0 0 4 14.556C4 18.728 7.582 21 12 21s8-2.272 8-6.444c0-1.061-.162-2.2-.493-3.309m-9.243-6.082A8.801 8.801 0 0 1 12 5c.78 0 1.5.108 2.161.306"
+                      />
+                    </svg>
+                    <span>Dog</span>
+                  </button>
+                  <button class="species-btn" type="button">
+                    <svg
+                      class="species-icon"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path d="M12 5c.67 0 1.35.09 2 .26 1.78-2 5.03-2.1 6.27-.46.72.97.53 2.56-.12 3.63A9 9 0 0 1 21 14c0 4.97-4.03 6-9 6s-9-1.03-9-6a9 9 0 0 1 .85-5.57c-.65-1.07-.84-2.66-.12-3.63C4.97 3.16 8.22 3.26 10 5.26 10.65 5.09 11.33 5 12 5Z" />
+                      <path d="M8 14v.5" />
+                      <path d="M16 14v.5" />
+                      <path d="M11.25 16.25h1.5L12 17l-.75-.75Z" />
+                    </svg>
+                    <span>Cat</span>
+                  </button>
+                </div>
+                <input
+                  class="mock-input"
+                  type="text"
+                  value="Rosie baseline"
+                  readonly
+                />
+                <button class="mock-create-btn" type="button">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    stroke-linecap="round"
+                  >
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                  Create
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Pipeline stages -->
+        <section class="section" id="pipeline">
+          <div class="section-heading">
+            <p class="eyebrow">The pipeline</p>
+            <h2>Ten stages from raw reads to vaccine.</h2>
+          </div>
+
+          <div class="pipeline-flow">
+            <div class="pipeline-stage pipeline-live">
+              <span class="pipeline-num">1</span>
+              <div>
+                <strong>Ingestion</strong>
+                <p>Upload FASTQ, BAM, or CRAM</p>
+              </div>
+              <span class="status-chip status-live">Live</span>
+            </div>
+            <div class="pipeline-stage pipeline-mock">
+              <span class="pipeline-num">2</span>
+              <div>
+                <strong>Alignment</strong>
+                <p>BWA-MEM2 against reference genome</p>
+              </div>
+              <span class="status-chip status-mock">Next</span>
+            </div>
+            <div class="pipeline-stage">
+              <span class="pipeline-num">3</span>
+              <div>
+                <strong>Variant Calling</strong>
+                <p>Mutect2 + ensemble callers</p>
+              </div>
+              <span class="status-chip status-planned">Planned</span>
+            </div>
+            <div class="pipeline-stage">
+              <span class="pipeline-num">4</span>
+              <div>
+                <strong>Annotation</strong>
+                <p>Ensembl VEP + SnpEff</p>
+              </div>
+              <span class="status-chip status-planned">Planned</span>
+            </div>
+            <div class="pipeline-stage">
+              <span class="pipeline-num">5</span>
+              <div>
+                <strong>Neoantigen Prediction</strong>
+                <p>pVACseq + NetMHCpan</p>
+              </div>
+              <span class="status-chip status-planned">Planned</span>
+            </div>
+            <div class="pipeline-stage">
+              <span class="pipeline-num">6</span>
+              <div>
+                <strong>Epitope Selection</strong>
+                <p>Rank and pick the best targets</p>
+              </div>
+              <span class="status-chip status-planned">Planned</span>
+            </div>
+            <div class="pipeline-stage">
+              <span class="pipeline-num">7</span>
+              <div>
+                <strong>mRNA Construct Design</strong>
+                <p>LinearDesign + codon optimization</p>
+              </div>
+              <span class="status-chip status-planned">Planned</span>
+            </div>
+            <div class="pipeline-stage">
+              <span class="pipeline-num">8</span>
+              <div>
+                <strong>Structure Prediction</strong>
+                <p>Peptide-MHC 3D modeling</p>
+              </div>
+              <span class="status-chip status-planned">Planned</span>
+            </div>
+            <div class="pipeline-stage">
+              <span class="pipeline-num">9</span>
+              <div>
+                <strong>Construct Output</strong>
+                <p>Final mRNA sequence for synthesis</p>
+              </div>
+              <span class="status-chip status-planned">Planned</span>
+            </div>
+            <div class="pipeline-stage">
+              <span class="pipeline-num">10</span>
+              <div>
+                <strong>AI Review</strong>
+                <p>Validation and optimization</p>
+              </div>
+              <span class="status-chip status-planned">Planned</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- App preview: Workspace view -->
+        <section class="section" id="workspace">
+          <div class="section-heading">
+            <p class="eyebrow">Inside the workspace</p>
+            <h2>Upload files. Watch normalization happen.</h2>
+          </div>
+
+          <div class="app-frame app-frame-wide">
+            <div class="app-chrome">
+              <div class="traffic-lights">
+                <span class="dot dot-red"></span>
+                <span class="dot dot-yellow"></span>
+                <span class="dot dot-green"></span>
+              </div>
+              <div class="url-bar">
+                localhost:3000/workspaces/abc123/ingestion
+              </div>
+            </div>
+            <div class="app-body">
+              <!-- App header -->
+              <div class="mock-header">
+                <div class="mock-header-left">
+                  <div class="mock-logo">
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="white"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                    >
+                      <path
+                        d="M2 15c6.667-6 13.333 0 20-6"
+                      />
+                      <path
+                        d="M9 22c1.798-1.998 2.518-3.995 2.807-5.993"
+                      />
+                      <path
+                        d="M15 2c-1.798 1.998-2.518 3.995-2.807 5.993"
+                      />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="mock-workspace-name">Rosie baseline</div>
+                    <div class="mock-workspace-meta">
+                      <span class="mock-badge-outline">Dog</span>
+                      <span class="mock-meta-text"
+                        >Alignment-ready intake</span
+                      >
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- App layout -->
+              <div class="mock-layout">
+                <!-- Sidebar -->
+                <nav class="mock-sidebar">
+                  <a class="mock-nav-item mock-nav-active">
+                    <span class="mock-nav-num mock-nav-num-active">1</span>
+                    Ingestion
+                  </a>
+                  <a class="mock-nav-item">
+                    <span class="mock-nav-num">2</span>
+                    Alignment
+                  </a>
+                  <a class="mock-nav-item">
+                    <span class="mock-nav-num">3</span>
+                    Variant Calling
+                  </a>
+                  <a class="mock-nav-item">
+                    <span class="mock-nav-num">4</span>
+                    Annotation
+                  </a>
+                  <a class="mock-nav-item">
+                    <span class="mock-nav-num">5</span>
+                    Neoantigen
+                  </a>
+                  <a class="mock-nav-item">
+                    <span class="mock-nav-num">6</span>
+                    Epitope Selection
+                  </a>
+                  <a class="mock-nav-item">
+                    <span class="mock-nav-num">7</span>
+                    Construct Design
+                  </a>
+                  <a class="mock-nav-item">
+                    <span class="mock-nav-num">8</span>
+                    Structure
+                  </a>
+                  <a class="mock-nav-item">
+                    <span class="mock-nav-num">9</span>
+                    Output
+                  </a>
+                  <a class="mock-nav-item">
+                    <span class="mock-nav-num">10</span>
+                    AI Review
+                  </a>
+                </nav>
+
+                <!-- Main content -->
+                <div class="mock-main">
+                  <div class="mock-stage-header">
+                    <h3>Ingestion</h3>
+                    <p>
+                      Upload sequencing files and normalize them into canonical
+                      paired FASTQ for alignment
+                    </p>
+                  </div>
+
+                  <!-- Upload dropzone -->
+                  <div class="mock-dropzone">
+                    <div class="mock-dropzone-icon">
+                      <svg
+                        width="20"
+                        height="20"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="17 8 12 3 7 8" />
+                        <line x1="12" y1="3" x2="12" y2="15" />
+                      </svg>
+                    </div>
+                    <strong>Drop sequencing files here or browse</strong>
+                    <p>
+                      Paired FASTQ preferred. Also accepts BAM and CRAM.
+                    </p>
+                    <button class="mock-choose-btn" type="button">
+                      Choose files
+                    </button>
+                  </div>
+
+                  <!-- Info + status cards -->
+                  <div class="mock-cards-row">
+                    <div class="mock-info-card">
+                      <h4>What this step expects</h4>
+                      <div class="mock-info-row mock-info-green">
+                        <svg
+                          class="mock-info-icon"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path
+                            d="M4 22V4c0-.5.2-1 .6-1.4C5 2.2 5.5 2 6 2h8.5L20 7.5V22c0 .5-.2 1-.6 1.4-.4.4-.9.6-1.4.6H6c-.5 0-1-.2-1.4-.6C4.2 23-.0 22.5 22"
+                          />
+                          <polyline points="14 2 14 8 20 8" />
+                        </svg>
+                        <div>
+                          <strong>Preferred: paired FASTQ</strong>
+                          <p>
+                            .fastq.gz can become alignment-ready immediately.
+                          </p>
+                        </div>
+                      </div>
+                      <div class="mock-info-row mock-info-slate">
+                        <svg
+                          class="mock-info-icon"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <rect width="18" height="18" x="3" y="3" rx="2" />
+                          <path d="M7 7h3v3H7z" />
+                          <path d="M7 14h3v3H7z" />
+                          <path d="M14 7h3" />
+                          <path d="M14 11h3" />
+                          <path d="M14 15h3" />
+                        </svg>
+                        <div>
+                          <strong>Also accepted: BAM and CRAM</strong>
+                          <p>
+                            Converts to canonical R1 + R2 FASTQ in the
+                            background.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="mock-status-card">
+                      <h4>Current batch</h4>
+                      <div class="mock-status-row">
+                        <span>Status</span>
+                        <span class="mock-status-badge">ready</span>
+                      </div>
+                      <div class="mock-status-row">
+                        <span>Source files</span>
+                        <span class="mock-status-value">2</span>
+                      </div>
+                      <div class="mock-status-row">
+                        <span>Canonical FASTQ</span>
+                        <span class="mock-status-value">2</span>
+                      </div>
+                      <div class="mock-status-message">
+                        Canonical paired FASTQ is ready for alignment.
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- File list -->
+                  <div class="mock-cards-row">
+                    <div class="mock-file-card">
+                      <h4>Uploaded source files</h4>
+                      <p class="mock-file-desc">
+                        Original files stored for this batch.
+                      </p>
+                      <div class="mock-file-item">
+                        <div>
+                          <div class="mock-file-name">
+                            rosie_tumor_R1.fastq.gz
+                          </div>
+                          <div class="mock-file-meta">
+                            FASTQ &middot; uploaded Apr 8, 2026
+                          </div>
+                        </div>
+                        <div class="mock-file-badges">
+                          <span class="mock-badge-outline">R1</span>
+                          <span class="mock-badge-secondary">ready</span>
+                          <span class="mock-file-size">1.2 GB</span>
+                        </div>
+                      </div>
+                      <div class="mock-file-item">
+                        <div>
+                          <div class="mock-file-name">
+                            rosie_tumor_R2.fastq.gz
+                          </div>
+                          <div class="mock-file-meta">
+                            FASTQ &middot; uploaded Apr 8, 2026
+                          </div>
+                        </div>
+                        <div class="mock-file-badges">
+                          <span class="mock-badge-outline">R2</span>
+                          <span class="mock-badge-secondary">ready</span>
+                          <span class="mock-file-size">1.3 GB</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="mock-file-card">
+                      <h4>Canonical FASTQ outputs</h4>
+                      <p class="mock-file-desc">
+                        Derived paired FASTQ.gz files used by alignment.
+                      </p>
+                      <div class="mock-file-item">
+                        <div>
+                          <div class="mock-file-name">
+                            canonical_R1.fastq.gz
+                          </div>
+                          <div class="mock-file-meta">
+                            FASTQ &middot; uploaded Apr 8, 2026
+                          </div>
+                        </div>
+                        <div class="mock-file-badges">
+                          <span class="mock-badge-outline">R1</span>
+                          <span class="mock-badge-secondary">ready</span>
+                          <span class="mock-file-size">1.2 GB</span>
+                        </div>
+                      </div>
+                      <div class="mock-file-item">
+                        <div>
+                          <div class="mock-file-name">
+                            canonical_R2.fastq.gz
+                          </div>
+                          <div class="mock-file-meta">
+                            FASTQ &middot; uploaded Apr 8, 2026
+                          </div>
+                        </div>
+                        <div class="mock-file-badges">
+                          <span class="mock-badge-outline">R2</span>
+                          <span class="mock-badge-secondary">ready</span>
+                          <span class="mock-file-size">1.3 GB</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+  </body>
+</html>

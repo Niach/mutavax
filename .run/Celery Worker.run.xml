@@ -1,0 +1,28 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Celery Worker" type="PythonConfigurationType" nameIsGenerated="false">
+    <module name="cancerstudio" />
+    <option name="INTERPRETER_OPTIONS" value="" />
+    <option name="PARENT_ENVS" value="true" />
+    <envs>
+      <env name="CELERY_BROKER_URL" value="redis://localhost:6379/0" />
+      <env name="CELERY_RESULT_BACKEND" value="redis://localhost:6379/1" />
+      <env name="S3_BUCKET" value="workspace-data" />
+      <env name="S3_ENDPOINT_URL" value="http://localhost:9000" />
+      <env name="AWS_ACCESS_KEY_ID" value="minioadmin" />
+      <env name="AWS_SECRET_ACCESS_KEY" value="minioadmin" />
+      <env name="AWS_REGION" value="us-east-1" />
+      <env name="S3_FORCE_PATH_STYLE" value="true" />
+    </envs>
+    <option name="SDK_HOME" value="$PROJECT_DIR$/backend/venv/bin/python" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/backend" />
+    <option name="IS_MODULE_SDK" value="false" />
+    <option name="ADD_CONTENT_ROOTS" value="true" />
+    <option name="ADD_SOURCE_ROOTS" value="true" />
+    <option name="SCRIPT_NAME" value="celery" />
+    <option name="PARAMETERS" value="-A app.tasks.celery_app worker --loglevel=info" />
+    <option name="SHOW_COMMAND_LINE" value="false" />
+    <option name="EMULATE_TERMINAL" value="true" />
+    <option name="MODULE_MODE" value="true" />
+    <method v="2" />
+  </configuration>
+</component>

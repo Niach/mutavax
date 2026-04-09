@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="220" y1="60" x2="1380" y2="980" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F6FAF7"/>
+      <stop offset="0.52" stop-color="#EEF4EF"/>
+      <stop offset="1" stop-color="#E4ECE5"/>
+    </linearGradient>
+    <radialGradient id="glow-left" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(300 210) rotate(38) scale(520 360)">
+      <stop stop-color="#5DBE8A" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#5DBE8A" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow-right" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1300 220) rotate(140) scale(460 300)">
+      <stop stop-color="#6C93B8" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#6C93B8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="app-surface" x1="160" y1="150" x2="1440" y2="840" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FDFEFD"/>
+      <stop offset="1" stop-color="#F3F7F3"/>
+    </linearGradient>
+    <linearGradient id="card-surface" x1="0" y1="0" x2="700" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F8FBF8"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1600" height="1000" rx="48" fill="url(#bg)"/>
+  <circle cx="300" cy="210" r="360" fill="url(#glow-left)"/>
+  <circle cx="1300" cy="220" r="290" fill="url(#glow-right)"/>
+  <path d="M0 850C220 794 468 776 744 796C1013 815 1299 881 1600 840V1000H0V850Z" fill="#E7EFE7"/>
+
+  <rect x="176" y="172" width="1248" height="676" rx="38" fill="#15221B" opacity="0.12"/>
+  <rect x="160" y="156" width="1280" height="684" rx="38" fill="url(#app-surface)" stroke="#D6DED6"/>
+  <rect x="160" y="156" width="1280" height="84" rx="38" fill="#F5F8F4"/>
+  <path d="M160 202H1440" stroke="#DCE4DC"/>
+  <circle cx="210" cy="198" r="8" fill="#FF6B6B"/>
+  <circle cx="238" cy="198" r="8" fill="#F7BF4F"/>
+  <circle cx="266" cy="198" r="8" fill="#48C774"/>
+  <rect x="620" y="180" width="360" height="36" rx="18" fill="#EDF2EE" stroke="#D7E1D9"/>
+  <text x="800" y="203" text-anchor="middle" fill="#627165" font-family="Avenir Next, Segoe UI, sans-serif" font-size="18">localhost:3000</text>
+
+  <rect x="216" y="268" width="1168" height="528" rx="28" fill="#EEF3EF"/>
+  <rect x="460" y="304" width="680" height="420" rx="32" fill="url(#card-surface)" stroke="#DBE3DB"/>
+  <text x="520" y="364" fill="#16231C" font-family="Avenir Next, Segoe UI, sans-serif" font-size="30" font-weight="700">New workspace</text>
+
+  <g transform="translate(520 408)">
+    <rect width="180" height="112" rx="24" fill="#FFFFFF" stroke="#D9E2DA"/>
+    <g transform="translate(66 20)" stroke="#23332A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="24" cy="16" r="14"/>
+      <path d="M47 54C44 40 35 34 24 34C13 34 4 40 1 54"/>
+    </g>
+    <text x="90" y="90" text-anchor="middle" fill="#24332B" font-family="Avenir Next, Segoe UI, sans-serif" font-size="22" font-weight="600">Human</text>
+  </g>
+
+  <g transform="translate(710 408)">
+    <rect width="180" height="112" rx="24" fill="#16382C"/>
+    <rect x="1" y="1" width="178" height="110" rx="23" stroke="#0E2A20"/>
+    <g transform="translate(52 18)" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M22 7.172C22 5.782 20.423 4.679 18.5 5C15.677 5.47 14.387 11.006 14.5 12C14.58 12.703 16.225 13.722 18.156 13C19.417 12.528 20.116 11.55 20.5 10.5"/>
+      <path d="M30.267 7.172C30.267 5.782 31.844 4.679 33.767 5C36.59 5.47 37.88 11.006 37.767 12C37.687 12.703 36.042 13.722 34.111 13C32.85 12.528 32.256 11.55 31.872 10.5"/>
+      <path d="M20 23V23.5"/>
+      <path d="M32 23V23.5"/>
+      <path d="M23.25 25.25H24.75L24 26L23.25 25.25Z"/>
+      <path d="M16.42 20.247A13.152 13.152 0 0 0 16 23.556C16 27.728 19.582 30 24 30S32 27.728 32 23.556C32 22.495 31.838 21.356 31.507 20.247M23.264 9.165A8.801 8.801 0 0 1 24 9C24.78 9 25.5 9.108 26.161 9.306"/>
+    </g>
+    <text x="90" y="90" text-anchor="middle" fill="#FFFFFF" font-family="Avenir Next, Segoe UI, sans-serif" font-size="22" font-weight="700">Dog</text>
+  </g>
+
+  <g transform="translate(900 408)">
+    <rect width="180" height="112" rx="24" fill="#FFFFFF" stroke="#D9E2DA"/>
+    <g transform="translate(58 20)" stroke="#23332A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M26 9C26.67 9 27.35 9.09 28 9.26C29.78 7.26 33.03 7.16 34.27 8.8C34.99 9.77 34.8 11.36 34.15 12.43A9 9 0 0 1 35 18C35 22.97 30.97 24 26 24S17 22.97 17 18A9 9 0 0 1 17.85 12.43C17.2 11.36 17.01 9.77 17.73 8.8C18.97 7.16 22.22 7.26 24 9.26C24.65 9.09 25.33 9 26 9Z"/>
+      <path d="M22 18V18.5"/>
+      <path d="M30 18V18.5"/>
+      <path d="M25.25 20.25H26.75L26 21L25.25 20.25Z"/>
+    </g>
+    <text x="90" y="90" text-anchor="middle" fill="#24332B" font-family="Avenir Next, Segoe UI, sans-serif" font-size="22" font-weight="600">Cat</text>
+  </g>
+
+  <rect x="520" y="552" width="560" height="72" rx="20" fill="#FFFFFF" stroke="#D9E2DA"/>
+  <text x="552" y="597" fill="#506055" font-family="Avenir Next, Segoe UI, sans-serif" font-size="24">Rosie baseline</text>
+
+  <rect x="520" y="644" width="190" height="56" rx="18" fill="#16231C"/>
+  <g transform="translate(548 661)" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round">
+    <line x1="12" y1="4" x2="12" y2="20"/>
+    <line x1="4" y1="12" x2="20" y2="12"/>
+  </g>
+  <text x="640" y="679" text-anchor="middle" fill="#FFFFFF" font-family="Avenir Next, Segoe UI, sans-serif" font-size="22" font-weight="700">Create</text>
+
+  <text x="160" y="96" fill="#146C4A" font-family="Avenir Next, Segoe UI, sans-serif" font-size="18" font-weight="700" letter-spacing="5">CANCERSTUDIO</text>
+</svg>
