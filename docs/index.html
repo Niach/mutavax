@@ -8,6 +8,12 @@
       name="description"
       content="Two DNA samples in, mRNA vaccine out. cancerstudio is an open pipeline for designing personalized cancer vaccines."
     />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&display=swap"
+    />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -51,8 +57,9 @@
             <span class="metric-label metric-label-navy">Early stage</span>
             <strong>Ingestion works. The rest is coming.</strong>
             <p>
-              File upload and normalization are live. Alignment, variant calling,
-              and everything downstream is being built stage by stage.
+              Tumor and normal intake are live with resumable chunked upload.
+              Alignment, variant calling, and everything downstream is being
+              built stage by stage.
             </p>
           </div>
         </div>
@@ -258,7 +265,7 @@
         <section class="section" id="workspace">
           <div class="section-heading">
             <p class="eyebrow">Inside the workspace</p>
-            <h2>Upload files. Watch normalization happen.</h2>
+            <h2>Two lanes. Tumor and normal. Both must land.</h2>
           </div>
 
           <div class="app-frame app-frame-wide">
@@ -360,180 +367,148 @@
                   <div class="mock-stage-header">
                     <h3>Ingestion</h3>
                     <p>
-                      Upload sequencing files and normalize them into canonical
-                      paired FASTQ for alignment
+                      Upload tumor and normal sequencing. Both lanes normalize
+                      into canonical paired FASTQ before alignment unlocks.
                     </p>
                   </div>
 
-                  <!-- Upload dropzone -->
-                  <div class="mock-dropzone">
-                    <div class="mock-dropzone-icon">
-                      <svg
-                        width="20"
-                        height="20"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
+                  <div class="mock-ingest-topbar">
+                    <span class="mock-ingest-eyebrow"
+                      >Sample intake · tumor &amp; normal</span
+                    >
+                    <span class="mock-ingest-chip mock-ingest-chip-ready"
+                      >● Alignment unlocked</span
+                    >
+                  </div>
+
+                  <div class="mock-lane-grid">
+                    <!-- Lane 01 · Tumor — ready -->
+                    <section class="mock-lane">
+                      <header class="mock-lane-head">
+                        <span class="mock-lane-eyebrow">Lane 01 · Tumor</span>
+                        <span
+                          class="mock-lane-slug mock-lane-slug-ready"
+                          >ready</span
+                        >
+                      </header>
+                      <h4
+                        class="mock-lane-heading mock-lane-heading-ready"
                       >
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                        <polyline points="17 8 12 3 7 8" />
-                        <line x1="12" y1="3" x2="12" y2="15" />
-                      </svg>
-                    </div>
-                    <strong>Drop sequencing files here or browse</strong>
-                    <p>
-                      Paired FASTQ preferred. Also accepts BAM and CRAM.
-                    </p>
-                    <button class="mock-choose-btn" type="button">
-                      Choose files
-                    </button>
-                  </div>
-
-                  <!-- Info + status cards -->
-                  <div class="mock-cards-row">
-                    <div class="mock-info-card">
-                      <h4>What this step expects</h4>
-                      <div class="mock-info-row mock-info-green">
-                        <svg
-                          class="mock-info-icon"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                        >
-                          <path
-                            d="M4 22V4c0-.5.2-1 .6-1.4C5 2.2 5.5 2 6 2h8.5L20 7.5V22c0 .5-.2 1-.6 1.4-.4.4-.9.6-1.4.6H6c-.5 0-1-.2-1.4-.6C4.2 23-.0 22.5 22"
-                          />
-                          <polyline points="14 2 14 8 20 8" />
-                        </svg>
-                        <div>
-                          <strong>Preferred: paired FASTQ</strong>
-                          <p>
-                            .fastq.gz can become alignment-ready immediately.
-                          </p>
-                        </div>
-                      </div>
-                      <div class="mock-info-row mock-info-slate">
-                        <svg
-                          class="mock-info-icon"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                        >
-                          <rect width="18" height="18" x="3" y="3" rx="2" />
-                          <path d="M7 7h3v3H7z" />
-                          <path d="M7 14h3v3H7z" />
-                          <path d="M14 7h3" />
-                          <path d="M14 11h3" />
-                          <path d="M14 15h3" />
-                        </svg>
-                        <div>
-                          <strong>Also accepted: BAM and CRAM</strong>
-                          <p>
-                            Converts to canonical R1 + R2 FASTQ in the
-                            background.
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="mock-status-card">
-                      <h4>Current batch</h4>
-                      <div class="mock-status-row">
-                        <span>Status</span>
-                        <span class="mock-status-badge">ready</span>
-                      </div>
-                      <div class="mock-status-row">
-                        <span>Source files</span>
-                        <span class="mock-status-value">2</span>
-                      </div>
-                      <div class="mock-status-row">
-                        <span>Canonical FASTQ</span>
-                        <span class="mock-status-value">2</span>
-                      </div>
-                      <div class="mock-status-message">
-                        Canonical paired FASTQ is ready for alignment.
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- File list -->
-                  <div class="mock-cards-row">
-                    <div class="mock-file-card">
-                      <h4>Uploaded source files</h4>
-                      <p class="mock-file-desc">
-                        Original files stored for this batch.
+                        Ready
+                      </h4>
+                      <p class="mock-lane-sub">
+                        Canonical paired FASTQ ready for alignment
                       </p>
-                      <div class="mock-file-item">
-                        <div>
-                          <div class="mock-file-name">
-                            rosie_tumor_R1.fastq.gz
-                          </div>
-                          <div class="mock-file-meta">
-                            FASTQ &middot; uploaded Apr 8, 2026
-                          </div>
-                        </div>
-                        <div class="mock-file-badges">
-                          <span class="mock-badge-outline">R1</span>
-                          <span class="mock-badge-secondary">ready</span>
-                          <span class="mock-file-size">1.2 GB</span>
-                        </div>
+                      <div class="mock-lane-bar">
+                        <div
+                          class="mock-lane-bar-fill mock-lane-bar-fill-ready"
+                          style="width: 100%"
+                        ></div>
                       </div>
-                      <div class="mock-file-item">
-                        <div>
-                          <div class="mock-file-name">
-                            rosie_tumor_R2.fastq.gz
-                          </div>
-                          <div class="mock-file-meta">
-                            FASTQ &middot; uploaded Apr 8, 2026
-                          </div>
-                        </div>
-                        <div class="mock-file-badges">
-                          <span class="mock-badge-outline">R2</span>
-                          <span class="mock-badge-secondary">ready</span>
-                          <span class="mock-file-size">1.3 GB</span>
-                        </div>
+                      <div class="mock-lane-numeric">
+                        <span>2.5 GB / 2.5 GB</span>
+                        <span>100%</span>
                       </div>
-                    </div>
-                    <div class="mock-file-card">
-                      <h4>Canonical FASTQ outputs</h4>
-                      <p class="mock-file-desc">
-                        Derived paired FASTQ.gz files used by alignment.
+                      <ul class="mock-lane-files">
+                        <li class="mock-lane-file">
+                          <span class="mock-lane-file-name"
+                            >rosie_tumor_R1.fastq.gz</span
+                          >
+                          <span class="mock-lane-file-size">1.2 GB</span>
+                          <div class="mock-lane-file-bar">
+                            <div
+                              class="mock-lane-file-fill mock-lane-file-fill-done"
+                              style="width: 100%"
+                            ></div>
+                          </div>
+                          <span class="mock-lane-file-meta">R1 · fastq</span>
+                          <span class="mock-lane-file-percent">100%</span>
+                        </li>
+                        <li class="mock-lane-file">
+                          <span class="mock-lane-file-name"
+                            >rosie_tumor_R2.fastq.gz</span
+                          >
+                          <span class="mock-lane-file-size">1.3 GB</span>
+                          <div class="mock-lane-file-bar">
+                            <div
+                              class="mock-lane-file-fill mock-lane-file-fill-done"
+                              style="width: 100%"
+                            ></div>
+                          </div>
+                          <span class="mock-lane-file-meta">R2 · fastq</span>
+                          <span class="mock-lane-file-percent">100%</span>
+                        </li>
+                      </ul>
+                      <div class="mock-lane-actions">
+                        <button class="mock-lane-btn" type="button">
+                          Replace files
+                        </button>
+                      </div>
+                    </section>
+
+                    <!-- Lane 02 · Normal — transferring -->
+                    <section class="mock-lane">
+                      <header class="mock-lane-head">
+                        <span class="mock-lane-eyebrow">Lane 02 · Normal</span>
+                        <span class="mock-lane-slug">uploading</span>
+                      </header>
+                      <h4 class="mock-lane-heading">Transferring</h4>
+                      <p class="mock-lane-sub">
+                        Streaming two files in resumable chunks
                       </p>
-                      <div class="mock-file-item">
-                        <div>
-                          <div class="mock-file-name">
-                            canonical_R1.fastq.gz
-                          </div>
-                          <div class="mock-file-meta">
-                            FASTQ &middot; uploaded Apr 8, 2026
-                          </div>
-                        </div>
-                        <div class="mock-file-badges">
-                          <span class="mock-badge-outline">R1</span>
-                          <span class="mock-badge-secondary">ready</span>
-                          <span class="mock-file-size">1.2 GB</span>
-                        </div>
+                      <div class="mock-lane-bar">
+                        <div
+                          class="mock-lane-bar-fill"
+                          style="width: 62%"
+                        ></div>
                       </div>
-                      <div class="mock-file-item">
-                        <div>
-                          <div class="mock-file-name">
-                            canonical_R2.fastq.gz
-                          </div>
-                          <div class="mock-file-meta">
-                            FASTQ &middot; uploaded Apr 8, 2026
-                          </div>
-                        </div>
-                        <div class="mock-file-badges">
-                          <span class="mock-badge-outline">R2</span>
-                          <span class="mock-badge-secondary">ready</span>
-                          <span class="mock-file-size">1.3 GB</span>
-                        </div>
+                      <div class="mock-lane-numeric">
+                        <span>1.5 GB / 2.4 GB</span>
+                        <span>62%</span>
                       </div>
-                    </div>
+                      <ul class="mock-lane-files">
+                        <li class="mock-lane-file">
+                          <span class="mock-lane-file-name"
+                            >rosie_normal_R1.fastq.gz</span
+                          >
+                          <span class="mock-lane-file-size">1.1 GB</span>
+                          <div class="mock-lane-file-bar">
+                            <div
+                              class="mock-lane-file-fill mock-lane-file-fill-done"
+                              style="width: 100%"
+                            ></div>
+                          </div>
+                          <span class="mock-lane-file-meta">R1 · fastq</span>
+                          <span class="mock-lane-file-percent">100%</span>
+                        </li>
+                        <li class="mock-lane-file">
+                          <span class="mock-lane-file-name"
+                            >rosie_normal_R2.fastq.gz</span
+                          >
+                          <span class="mock-lane-file-size">1.3 GB</span>
+                          <div class="mock-lane-file-bar">
+                            <div
+                              class="mock-lane-file-fill"
+                              style="width: 32%"
+                            ></div>
+                          </div>
+                          <span class="mock-lane-file-meta">R2 · fastq</span>
+                          <span class="mock-lane-file-percent">32%</span>
+                        </li>
+                      </ul>
+                      <div class="mock-lane-actions">
+                        <button class="mock-lane-btn" type="button">
+                          Replace files
+                        </button>
+                        <button
+                          class="mock-lane-btn mock-lane-btn-ghost"
+                          type="button"
+                        >
+                          Pause
+                        </button>
+                        <span class="mock-lane-streaming">streaming</span>
+                      </div>
+                    </section>
                   </div>
                 </div>
               </div>
