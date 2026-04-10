@@ -2,7 +2,7 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +51,57 @@ def session_scope():
 
 
 def init_db() -> None:
-    from app.models.records import IngestionBatchRecord, WorkspaceFileRecord, WorkspaceRecord
+    from app.models.records import (
+        IngestionBatchRecord,
+        UploadSessionFileRecord,
+        UploadSessionPartRecord,
+        UploadSessionRecord,
+        WorkspaceFileRecord,
+        WorkspaceRecord,
+    )
 
-    _ = (WorkspaceRecord, IngestionBatchRecord, WorkspaceFileRecord)
+    _ = (
+        WorkspaceRecord,
+        IngestionBatchRecord,
+        WorkspaceFileRecord,
+        UploadSessionRecord,
+        UploadSessionFileRecord,
+        UploadSessionPartRecord,
+    )
     Base.metadata.create_all(bind=engine)
+    _ensure_schema_updates()
+
+
+def _ensure_schema_updates() -> None:
+    inspector = inspect(engine)
+
+    _ensure_column(
+        inspector,
+        "ingestion_batches",
+        "sample_lane",
+        "VARCHAR(16) NOT NULL DEFAULT 'tumor'",
+    )
+    _ensure_column(
+        inspector,
+        "ingestion_batches",
+        "sample_stem",
+        "VARCHAR(255)",
+    )
+    _ensure_column(
+        inspector,
+        "workspace_files",
+        "sample_lane",
+        "VARCHAR(16) NOT NULL DEFAULT 'tumor'",
+    )
+
+
+def _ensure_column(inspector, table_name: str, column_name: str, definition: str) -> None:
+    if table_name not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns(table_name)}
+    if column_name in existing_columns:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))

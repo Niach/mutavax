@@ -5,11 +5,13 @@ import { PIPELINE_STAGES } from "@/lib/types";
 interface FutureStagePanelProps {
   stageId: PipelineStageId;
   workspace: Workspace;
+  lockedReason?: string;
 }
 
 export default function FutureStagePanel({
   stageId,
   workspace,
+  lockedReason,
 }: FutureStagePanelProps) {
   const stage = PIPELINE_STAGES.find((s) => s.id === stageId)!;
 
@@ -20,8 +22,8 @@ export default function FutureStagePanel({
         {stage.description}
       </p>
       <p className="mt-4 text-sm text-muted-foreground">
-        This step is still placeholder-backed while we finish the ingestion and
-        storage foundation.
+        {lockedReason ??
+          "This step is still placeholder-backed while we finish the ingestion and storage foundation."}
       </p>
       <Link
         href={`/workspaces/${workspace.id}/ingestion`}

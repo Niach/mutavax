@@ -1,9 +1,11 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="Backend API" type="PythonConfigurationType" nameIsGenerated="false">
+  <configuration default="false" name="Backend API" type="PythonConfigurationType" factoryName="Python">
     <module name="cancerstudio" />
+    <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
     <option name="PARENT_ENVS" value="true" />
     <envs>
+      <env name="PYTHONUNBUFFERED" value="1" />
       <env name="S3_BUCKET" value="workspace-data" />
       <env name="S3_ENDPOINT_URL" value="http://localhost:9000" />
       <env name="AWS_ACCESS_KEY_ID" value="minioadmin" />
@@ -13,6 +15,7 @@
       <env name="CORS_ALLOW_ORIGINS" value="http://localhost:3000" />
     </envs>
     <option name="SDK_HOME" value="$PROJECT_DIR$/backend/venv/bin/python" />
+    <option name="SDK_NAME" value="Python 3.11 (cancerstudio)" />
     <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/backend" />
     <option name="IS_MODULE_SDK" value="false" />
     <option name="ADD_CONTENT_ROOTS" value="true" />
@@ -22,6 +25,8 @@
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="true" />
     <option name="MODULE_MODE" value="true" />
+    <option name="REDIRECT_INPUT" value="false" />
+    <option name="INPUT_FILE" value="" />
     <method v="2" />
   </configuration>
 </component>

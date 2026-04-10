@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Dna, Plus } from "lucide-react";
+import { Dna, LockKeyhole, Plus } from "lucide-react";
 
 import IngestionStagePanel from "@/components/workspaces/IngestionStagePanel";
 import FutureStagePanel from "@/components/workspaces/FutureStagePanel";
@@ -40,8 +40,13 @@ export default function WorkspaceStageShell({
     mergeWorkspaces(initialWorkspaces, initialWorkspace)
   );
 
+  const alignmentLocked = !workspace.ingestion.readyForAlignment;
+
   useEffect(() => {
     if (workspace.activeStage === currentStageId) {
+      return;
+    }
+    if (currentStageId === "alignment" && alignmentLocked) {
       return;
     }
 
@@ -59,7 +64,7 @@ export default function WorkspaceStageShell({
     return () => {
       ignore = true;
     };
-  }, [currentStageId, workspace.activeStage, workspace.id]);
+  }, [alignmentLocked, currentStageId, workspace.activeStage, workspace.id]);
 
   const currentStage = PIPELINE_STAGES.find(
     (stage) => stage.id === currentStageId
@@ -71,27 +76,26 @@ export default function WorkspaceStageShell({
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="border-b bg-white">
-        <div className="mx-auto flex max-w-[1400px] items-center justify-between gap-4 px-4 py-3 lg:px-6">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(21,128,61,0.08),_transparent_22%),radial-gradient(circle_at_bottom_right,_rgba(14,165,233,0.08),_transparent_24%),linear-gradient(180deg,_#f8fbf8_0%,_#f2f6f3_100%)]">
+      <header className="border-b border-black/6 bg-white/85 backdrop-blur">
+        <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-4 px-4 py-3 lg:px-6">
           <div className="flex items-center gap-3">
             <Link
               href="/"
-              className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground"
+              className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm shadow-emerald-900/10"
             >
               <Dna className="size-4" />
             </Link>
             <div className="space-y-1">
               <h1 className="text-lg font-semibold">{workspace.displayName}</h1>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="outline">
                   {formatSpeciesLabel(workspace.species)}
                 </Badge>
                 <span className="text-xs text-muted-foreground">
                   {workspace.ingestion.readyForAlignment
-                    ? "Alignment-ready intake"
-                    : "Ingestion in progress"}
+                    ? "Tumor + normal intake ready"
+                    : "Ingestion is still blocking alignment"}
                 </span>
               </div>
             </div>
@@ -107,7 +111,7 @@ export default function WorkspaceStageShell({
                   );
                 })
               }
-              className="rounded-lg border px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+              className="rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200"
             >
               {workspaces.map((item) => (
                 <option key={item.id} value={item.id}>
@@ -117,7 +121,7 @@ export default function WorkspaceStageShell({
             </select>
             <Link
               href="/"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-black/10 text-muted-foreground transition hover:bg-muted hover:text-foreground"
             >
               <Plus className="size-4" />
             </Link>
@@ -125,47 +129,95 @@ export default function WorkspaceStageShell({
         </div>
       </header>
 
-      <div className="mx-auto max-w-[1400px] px-4 py-6 lg:px-6">
-        <div className="grid gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
-          {/* Sidebar — compact pipeline nav */}
-          <nav className="space-y-1">
-            {PIPELINE_STAGES.map((stage, index) => {
-              const isActive = stage.id === currentStageId;
+      <div className="mx-auto max-w-[1440px] px-4 py-6 lg:px-6">
+        <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+          <nav className="rounded-[28px] border border-black/6 bg-white/80 p-3 shadow-sm shadow-black/5 backdrop-blur">
+            <div className="mb-3 px-2 text-[11px] font-semibold tracking-[0.24em] text-slate-500 uppercase">
+              Pipeline
+            </div>
+            <div className="space-y-1">
+              {PIPELINE_STAGES.map((stage, index) => {
+                const isActive = stage.id === currentStageId;
+                const isAlignmentLocked =
+                  stage.id === "alignment" && alignmentLocked;
 
-              return (
-                <Link
-                  key={stage.id}
-                  href={`/workspaces/${workspace.id}/${stage.id}`}
-                  className={cn(
-                    "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition",
-                    isActive
-                      ? "bg-primary/5 font-medium text-primary"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                  )}
-                >
-                  <span
+                const content = (
+                  <>
+                    <span
+                      className={cn(
+                        "flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
+                        isActive
+                          ? "bg-emerald-600 text-white"
+                          : isAlignmentLocked
+                            ? "bg-slate-200 text-slate-500"
+                            : "bg-muted text-muted-foreground"
+                      )}
+                    >
+                      {isAlignmentLocked ? (
+                        <LockKeyhole className="size-3.5" />
+                      ) : (
+                        index + 1
+                      )}
+                    </span>
+                    <div className="min-w-0">
+                      <div>{stage.name}</div>
+                      {isAlignmentLocked && (
+                        <div className="text-xs font-normal text-slate-500">
+                          Wait for both lanes
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+
+                if (isAlignmentLocked) {
+                  return (
+                    <div
+                      key={stage.id}
+                      aria-disabled="true"
+                      className="flex cursor-not-allowed items-center gap-3 rounded-2xl px-3 py-2 text-sm text-slate-400"
+                    >
+                      {content}
+                    </div>
+                  );
+                }
+
+                return (
+                  <Link
+                    key={stage.id}
+                    href={`/workspaces/${workspace.id}/${stage.id}`}
                     className={cn(
-                      "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
+                      "flex items-center gap-3 rounded-2xl px-3 py-2 text-sm transition",
                       isActive
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground"
+                        ? "bg-emerald-50 font-medium text-emerald-700"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
                     )}
                   >
-                    {index + 1}
-                  </span>
-                  {stage.name}
-                </Link>
-              );
-            })}
+                    {content}
+                  </Link>
+                );
+              })}
+            </div>
           </nav>
 
-          {/* Main content */}
           <main className="space-y-4">
-            <div className="mb-2">
-              <h2 className="text-xl font-semibold">{currentStage.name}</h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {currentStage.description}
-              </p>
+            <div className="rounded-[28px] border border-black/6 bg-white/80 px-6 py-5 shadow-sm shadow-black/5 backdrop-blur">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-2xl font-semibold tracking-tight">
+                    {currentStage.name}
+                  </h2>
+                  <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                    {currentStage.description}
+                  </p>
+                </div>
+                <Badge
+                  variant="outline"
+                  className="border-black/10 bg-slate-50 text-slate-600"
+                >
+                  {currentStage.implementationState}
+                </Badge>
+              </div>
             </div>
 
             {currentStageId === "ingestion" ? (
@@ -177,6 +229,11 @@ export default function WorkspaceStageShell({
               <FutureStagePanel
                 stageId={currentStageId}
                 workspace={workspace}
+                lockedReason={
+                  currentStageId === "alignment" && alignmentLocked
+                    ? "Alignment unlocks once both tumor and normal lanes have canonical paired FASTQ ready."
+                    : undefined
+                }
               />
             )}
           </main>

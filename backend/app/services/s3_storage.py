@@ -48,6 +48,45 @@ class S3Storage:
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.client.download_file(self.bucket, key, str(destination))
 
+    def create_multipart_upload(self, key: str, content_type: Optional[str] = None) -> str:
+        extra_args = {"ContentType": content_type} if content_type else {}
+        response = self.client.create_multipart_upload(
+            Bucket=self.bucket,
+            Key=key,
+            **extra_args,
+        )
+        return response["UploadId"]
+
+    def upload_part(self, key: str, upload_id: str, part_number: int, body: bytes) -> str:
+        response = self.client.upload_part(
+            Bucket=self.bucket,
+            Key=key,
+            UploadId=upload_id,
+            PartNumber=part_number,
+            Body=body,
+        )
+        return response["ETag"]
+
+    def complete_multipart_upload(
+        self,
+        key: str,
+        upload_id: str,
+        parts: list[dict[str, object]],
+    ) -> None:
+        self.client.complete_multipart_upload(
+            Bucket=self.bucket,
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+        )
+
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        self.client.abort_multipart_upload(
+            Bucket=self.bucket,
+            Key=key,
+            UploadId=upload_id,
+        )
+
 
 _storage: Optional[S3Storage] = None
 

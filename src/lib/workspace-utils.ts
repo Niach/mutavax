@@ -1,6 +1,8 @@
 import type {
   IngestionStatus,
   PipelineStage,
+  ReadPair,
+  SampleLane,
   Workspace,
   WorkspaceFile,
   WorkspaceSpecies,
@@ -8,58 +10,78 @@ import type {
 
 export type StageTone = "neutral" | "success" | "warning" | "info";
 
-export interface WorkspaceReadiness {
-  activeBatchId?: string | null;
+export interface LaneWorkspaceReadiness {
+  sampleLane: SampleLane;
+  summary: Workspace["ingestion"]["lanes"]["tumor"];
   sourceFiles: WorkspaceFile[];
   canonicalFiles: WorkspaceFile[];
-  latestR1?: WorkspaceFile;
-  latestR2?: WorkspaceFile;
-  hasFiles: boolean;
-  hasPairedFastq: boolean;
-  sourceCount: number;
-  canonicalCount: number;
   totalBytes: number;
-  missingPairs: Array<"R1" | "R2">;
-  status: IngestionStatus;
-  readyForAlignment: boolean;
+  hasFiles: boolean;
   failedFiles: WorkspaceFile[];
   pendingFiles: WorkspaceFile[];
 }
 
+export interface WorkspaceReadiness {
+  lanes: Record<SampleLane, LaneWorkspaceReadiness>;
+  status: IngestionStatus;
+  readyForAlignment: boolean;
+}
+
+function getLaneBatchFiles(
+  workspace: Workspace,
+  sampleLane: SampleLane
+): WorkspaceFile[] {
+  const lane = workspace.ingestion.lanes[sampleLane];
+  if (!lane.activeBatchId) {
+    return [];
+  }
+
+  return workspace.files.filter(
+    (file) => file.sampleLane === sampleLane && file.batchId === lane.activeBatchId
+  );
+}
+
 export function analyzeWorkspace(workspace: Workspace): WorkspaceReadiness {
-  const activeBatchId = workspace.ingestion.activeBatchId;
-  const batchFiles = workspace.files.filter((file) =>
-    activeBatchId ? file.batchId === activeBatchId : true
-  );
-  const sourceFiles = batchFiles.filter((file) => file.fileRole === "source");
-  const canonicalFiles = batchFiles.filter(
-    (file) => file.fileRole === "canonical"
-  );
-  const readyCanonicalFiles = canonicalFiles.filter(
-    (file) => file.status === "ready"
-  );
-  const r1Files = readyCanonicalFiles.filter((file) => file.readPair === "R1");
-  const r2Files = readyCanonicalFiles.filter((file) => file.readPair === "R2");
+  const lanes = {
+    tumor: buildLaneReadiness(workspace, "tumor"),
+    normal: buildLaneReadiness(workspace, "normal"),
+  };
 
   return {
-    activeBatchId,
-    sourceFiles,
-    canonicalFiles,
-    latestR1: r1Files[0],
-    latestR2: r2Files[0],
-    hasFiles: batchFiles.length > 0,
-    hasPairedFastq: workspace.ingestion.readyForAlignment,
-    sourceCount: sourceFiles.length,
-    canonicalCount: canonicalFiles.length,
-    totalBytes: batchFiles.reduce((sum, file) => sum + file.sizeBytes, 0),
-    missingPairs: workspace.ingestion.missingPairs.filter(
-      (pair): pair is "R1" | "R2" => pair === "R1" || pair === "R2"
-    ),
+    lanes,
     status: workspace.ingestion.status,
     readyForAlignment: workspace.ingestion.readyForAlignment,
-    failedFiles: batchFiles.filter((file) => file.status === "failed"),
-    pendingFiles: batchFiles.filter((file) => file.status === "normalizing"),
   };
+}
+
+function buildLaneReadiness(
+  workspace: Workspace,
+  sampleLane: SampleLane
+): LaneWorkspaceReadiness {
+  const files = getLaneBatchFiles(workspace, sampleLane);
+  const sourceFiles = files.filter((file) => file.fileRole === "source");
+  const canonicalFiles = files.filter((file) => file.fileRole === "canonical");
+
+  return {
+    sampleLane,
+    summary: workspace.ingestion.lanes[sampleLane],
+    sourceFiles,
+    canonicalFiles,
+    totalBytes: files.reduce((sum, file) => sum + file.sizeBytes, 0),
+    hasFiles: files.length > 0,
+    failedFiles: files.filter((file) => file.status === "failed"),
+    pendingFiles: files.filter((file) => file.status === "normalizing"),
+  };
+}
+
+export function getLaneMissingPairs(
+  workspace: Workspace,
+  sampleLane: SampleLane
+): Array<Extract<ReadPair, "R1" | "R2">> {
+  return workspace.ingestion.lanes[sampleLane].missingPairs.filter(
+    (pair): pair is Extract<ReadPair, "R1" | "R2"> =>
+      pair === "R1" || pair === "R2"
+  );
 }
 
 export function formatBytes(bytes: number) {
@@ -94,6 +116,10 @@ export function formatSpeciesLabel(species: WorkspaceSpecies) {
   return "Cat";
 }
 
+export function formatLaneLabel(sampleLane: SampleLane) {
+  return sampleLane === "tumor" ? "Tumor" : "Normal";
+}
+
 export function getImplementationLabel(stage: PipelineStage) {
   if (stage.implementationState === "live") {
     return "Live";
@@ -114,18 +140,18 @@ export function getStageStatus(stage: PipelineStage, workspace: Workspace) {
     if (readiness.status === "failed") {
       return { label: "Needs review", tone: "warning" as const };
     }
-    if (readiness.status === "normalizing") {
-      return { label: "Normalizing", tone: "info" as const };
+    if (
+      readiness.status === "normalizing" ||
+      readiness.status === "uploading"
+    ) {
+      return { label: "In progress", tone: "info" as const };
     }
-    if (readiness.hasFiles) {
-      return { label: "Missing pair", tone: "warning" as const };
-    }
-    return { label: "Needs files", tone: "warning" as const };
+    return { label: "Waiting", tone: "warning" as const };
   }
 
   if (stage.id === "alignment") {
     if (!readiness.readyForAlignment) {
-      return { label: "Waiting", tone: "neutral" as const };
+      return { label: "Locked", tone: "warning" as const };
     }
     return { label: "Mock", tone: "info" as const };
   }

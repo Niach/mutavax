@@ -30,6 +30,11 @@ class WorkspaceSpecies(str, Enum):
     CAT = "cat"
 
 
+class SampleLane(str, Enum):
+    TUMOR = "tumor"
+    NORMAL = "normal"
+
+
 class WorkspaceFileFormat(str, Enum):
     FASTQ = "fastq"
     BAM = "bam"
@@ -50,9 +55,24 @@ class WorkspaceFileStatus(str, Enum):
 
 class IngestionStatus(str, Enum):
     EMPTY = "empty"
+    UPLOADING = "uploading"
     UPLOADED = "uploaded"
     NORMALIZING = "normalizing"
     READY = "ready"
+    FAILED = "failed"
+
+
+class UploadSessionStatus(str, Enum):
+    UPLOADING = "uploading"
+    UPLOADED = "uploaded"
+    FAILED = "failed"
+    COMMITTED = "committed"
+
+
+class UploadSessionFileStatus(str, Enum):
+    PENDING = "pending"
+    UPLOADING = "uploading"
+    UPLOADED = "uploaded"
     FAILED = "failed"
 
 
@@ -66,6 +86,7 @@ class WorkspaceFileResponse(BaseModel):
     id: str
     batch_id: str
     source_file_id: Optional[str] = None
+    sample_lane: SampleLane
     filename: str
     format: WorkspaceFileFormat
     file_role: WorkspaceFileRole
@@ -77,14 +98,22 @@ class WorkspaceFileResponse(BaseModel):
     error: Optional[str] = None
 
 
-class IngestionSummaryResponse(BaseModel):
+class IngestionLaneSummaryResponse(BaseModel):
     active_batch_id: Optional[str] = None
+    sample_lane: SampleLane
     status: IngestionStatus = IngestionStatus.EMPTY
     ready_for_alignment: bool = False
     source_file_count: int = 0
     canonical_file_count: int = 0
     missing_pairs: List[ReadPair] = Field(default_factory=list)
+    blocking_issues: List[str] = Field(default_factory=list)
     updated_at: Optional[str] = None
+
+
+class IngestionSummaryResponse(BaseModel):
+    status: IngestionStatus = IngestionStatus.EMPTY
+    ready_for_alignment: bool = False
+    lanes: Dict[SampleLane, IngestionLaneSummaryResponse] = Field(default_factory=dict)
 
 
 class WorkspaceCreateRequest(BaseModel):
@@ -105,6 +134,52 @@ class WorkspaceResponse(BaseModel):
 
 class ActiveStageUpdateRequest(BaseModel):
     active_stage: PipelineStageId
+
+
+class UploadSessionFileCreateRequest(BaseModel):
+    filename: str
+    size_bytes: int
+    last_modified_ms: int
+    content_type: Optional[str] = None
+
+
+class UploadSessionCreateRequest(BaseModel):
+    sample_lane: SampleLane
+    files: List[UploadSessionFileCreateRequest] = Field(default_factory=list)
+
+
+class UploadSessionPartResponse(BaseModel):
+    uploaded_bytes: int
+    total_parts: int
+    completed_part_numbers: List[int] = Field(default_factory=list)
+
+
+class UploadSessionFileResponse(BaseModel):
+    id: str
+    sample_lane: SampleLane
+    filename: str
+    format: WorkspaceFileFormat
+    read_pair: ReadPair
+    size_bytes: int
+    uploaded_bytes: int
+    total_parts: int
+    last_modified_ms: int
+    fingerprint: str
+    content_type: Optional[str] = None
+    status: UploadSessionFileStatus
+    error: Optional[str] = None
+    completed_part_numbers: List[int] = Field(default_factory=list)
+
+
+class UploadSessionResponse(BaseModel):
+    id: str
+    sample_lane: SampleLane
+    status: UploadSessionStatus
+    chunk_size_bytes: int
+    error: Optional[str] = None
+    files: List[UploadSessionFileResponse] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
 
 
 class JobSubmitRequest(BaseModel):

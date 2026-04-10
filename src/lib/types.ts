@@ -12,6 +12,7 @@ export type PipelineStageId =
 
 export type JobStatus = "pending" | "running" | "completed" | "failed";
 export type WorkspaceSpecies = "human" | "dog" | "cat";
+export type SampleLane = "tumor" | "normal";
 export type WorkspaceFileFormat = "fastq" | "bam" | "cram";
 export type WorkspaceFileRole = "source" | "canonical";
 export type WorkspaceFileStatus =
@@ -21,9 +22,20 @@ export type WorkspaceFileStatus =
   | "failed";
 export type IngestionStatus =
   | "empty"
+  | "uploading"
   | "uploaded"
   | "normalizing"
   | "ready"
+  | "failed";
+export type UploadSessionStatus =
+  | "uploading"
+  | "uploaded"
+  | "failed"
+  | "committed";
+export type UploadSessionFileStatus =
+  | "pending"
+  | "uploading"
+  | "uploaded"
   | "failed";
 export type ReadPair = "R1" | "R2" | "unknown";
 export type StageImplementationState = "live" | "mock" | "planned";
@@ -53,6 +65,7 @@ export interface WorkspaceFile {
   id: string;
   batchId: string;
   sourceFileId?: string | null;
+  sampleLane: SampleLane;
   filename: string;
   format: WorkspaceFileFormat;
   fileRole: WorkspaceFileRole;
@@ -64,14 +77,73 @@ export interface WorkspaceFile {
   error?: string | null;
 }
 
-export interface IngestionSummary {
+export interface IngestionLaneSummary {
   activeBatchId?: string | null;
+  sampleLane: SampleLane;
   status: IngestionStatus;
   readyForAlignment: boolean;
   sourceFileCount: number;
   canonicalFileCount: number;
   missingPairs: ReadPair[];
+  blockingIssues: string[];
   updatedAt?: string | null;
+}
+
+export interface IngestionSummary {
+  status: IngestionStatus;
+  readyForAlignment: boolean;
+  lanes: Record<SampleLane, IngestionLaneSummary>;
+}
+
+export interface UploadSessionFile {
+  id: string;
+  sampleLane: SampleLane;
+  filename: string;
+  format: WorkspaceFileFormat;
+  readPair: ReadPair;
+  sizeBytes: number;
+  uploadedBytes: number;
+  totalParts: number;
+  lastModifiedMs: number;
+  fingerprint: string;
+  contentType?: string | null;
+  status: UploadSessionFileStatus;
+  error?: string | null;
+  completedPartNumbers: number[];
+}
+
+export interface UploadSession {
+  id: string;
+  sampleLane: SampleLane;
+  status: UploadSessionStatus;
+  chunkSizeBytes: number;
+  error?: string | null;
+  files: UploadSessionFile[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateWorkspaceInput {
+  displayName: string;
+  species: WorkspaceSpecies;
+}
+
+export interface UploadSessionCreateFileInput {
+  filename: string;
+  sizeBytes: number;
+  lastModifiedMs: number;
+  contentType?: string;
+}
+
+export interface UploadSessionCreateInput {
+  sampleLane: SampleLane;
+  files: UploadSessionCreateFileInput[];
+}
+
+export interface UploadPartResult {
+  uploadedBytes: number;
+  totalParts: number;
+  completedPartNumbers: number[];
 }
 
 export interface Workspace {
@@ -83,11 +155,6 @@ export interface Workspace {
   files: WorkspaceFile[];
   createdAt: string;
   updatedAt: string;
-}
-
-export interface CreateWorkspaceInput {
-  displayName: string;
-  species: WorkspaceSpecies;
 }
 
 export interface DLAAllele {
@@ -128,7 +195,7 @@ export const PIPELINE_STAGES: PipelineStage[] = [
     id: "ingestion",
     name: "Ingestion",
     description:
-      "Upload sequencing files and normalize them into canonical paired FASTQ for alignment",
+      "Upload tumor and normal sequencing files, then normalize them into canonical paired FASTQ",
     icon: "Upload",
     tools: ["samtools", "fastp"],
     implementationState: "live",

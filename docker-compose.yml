@@ -57,7 +57,7 @@ services:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin
     volumes:
-      - minio-data:/data
+      - ${MINIO_DATA_DIR:-./minio-data}:/data
 
   bucket-init:
     image: minio/mc:RELEASE.2025-02-21T16-00-46Z
@@ -80,4 +80,3 @@ services:
 volumes:
   frontend-node-modules:
   postgres-data:
-  minio-data:

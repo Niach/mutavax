@@ -1,34 +1,69 @@
 import gzip
 import io
+import uuid
+from pathlib import Path
 from typing import Optional
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
 from app.db import init_db, session_scope
 from app.main import app
-from app.models.records import IngestionBatchRecord, WorkspaceFileRecord, WorkspaceRecord
+from app.models.records import (
+    IngestionBatchRecord,
+    UploadSessionFileRecord,
+    UploadSessionPartRecord,
+    UploadSessionRecord,
+    WorkspaceFileRecord,
+    WorkspaceRecord,
+)
 from app.services import workspace_store
 
 
 class FakeStorage:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
+        self.multipart_uploads: dict[str, dict[int, bytes]] = {}
 
     def upload_fileobj(self, fileobj, key: str, content_type: Optional[str] = None) -> None:
         fileobj.seek(0)
         self.objects[key] = fileobj.read()
 
-    def upload_path(self, path, key: str, content_type: Optional[str] = None) -> None:
+    def upload_path(self, path: Path, key: str, content_type: Optional[str] = None) -> None:
         self.objects[key] = path.read_bytes()
 
     def copy_object(self, source_key: str, destination_key: str) -> None:
         self.objects[destination_key] = self.objects[source_key]
 
-    def download_path(self, key: str, destination) -> None:
+    def download_path(self, key: str, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(self.objects[key])
+
+    def create_multipart_upload(self, key: str, content_type: Optional[str] = None) -> str:
+        upload_id = str(uuid.uuid4())
+        self.multipart_uploads[upload_id] = {}
+        return upload_id
+
+    def upload_part(self, key: str, upload_id: str, part_number: int, body: bytes) -> str:
+        self.multipart_uploads[upload_id][part_number] = body
+        return f"etag-{part_number}"
+
+    def complete_multipart_upload(
+        self,
+        key: str,
+        upload_id: str,
+        parts: list[dict[str, object]],
+    ) -> None:
+        ordered = [
+            self.multipart_uploads[upload_id][int(part["PartNumber"])]
+            for part in parts
+        ]
+        self.objects[key] = b"".join(ordered)
+        self.multipart_uploads.pop(upload_id, None)
+
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        self.multipart_uploads.pop(upload_id, None)
 
 
 def gzip_bytes(payload: bytes) -> bytes:
@@ -42,11 +77,17 @@ def gzip_bytes(payload: bytes) -> bytes:
 def clean_database():
     init_db()
     with session_scope() as session:
+        session.execute(delete(UploadSessionPartRecord))
+        session.execute(delete(UploadSessionFileRecord))
+        session.execute(delete(UploadSessionRecord))
         session.execute(delete(WorkspaceFileRecord))
         session.execute(delete(IngestionBatchRecord))
         session.execute(delete(WorkspaceRecord))
     yield
     with session_scope() as session:
+        session.execute(delete(UploadSessionPartRecord))
+        session.execute(delete(UploadSessionFileRecord))
+        session.execute(delete(UploadSessionRecord))
         session.execute(delete(WorkspaceFileRecord))
         session.execute(delete(IngestionBatchRecord))
         session.execute(delete(WorkspaceRecord))
@@ -60,169 +101,373 @@ def fake_storage(monkeypatch: pytest.MonkeyPatch) -> FakeStorage:
 
 
 @pytest.fixture
-def queued_batches(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    batches: list[str] = []
+def queued_batches(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    batches: list[tuple[str, str]] = []
     monkeypatch.setattr(
         workspace_store,
         "enqueue_batch_normalization",
-        lambda batch_id: batches.append(batch_id),
+        lambda workspace_id, batch_id: batches.append((workspace_id, batch_id)),
     )
     return batches
 
 
 @pytest.fixture
-def client() -> TestClient:
-    with TestClient(app) as test_client:
-        yield test_client
+async def client():
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            follow_redirects=True,
+        ) as test_client:
+            yield test_client
 
 
-def create_workspace(client: TestClient, name: str = "Rosie", species: str = "dog") -> dict:
-    response = client.post(
+async def create_workspace(
+    client: httpx.AsyncClient,
+    name: str = "Rosie",
+    species: str = "dog",
+) -> dict:
+    response = await client.post(
         "/api/workspaces",
         json={"display_name": name, "species": species},
     )
-    assert response.status_code == 201
+    assert response.status_code == 201, response.text
     return response.json()
 
 
-def upload_files(client: TestClient, workspace_id: str, files: list[tuple[str, bytes, str]]) -> dict:
-    response = client.post(
-        f"/api/workspaces/{workspace_id}/files",
-        files=[("files", file_payload) for file_payload in files],
+async def create_session(
+    client: httpx.AsyncClient,
+    workspace_id: str,
+    sample_lane: str,
+    files: list[tuple[str, bytes, str, int]],
+) -> dict:
+    response = await client.post(
+        f"/api/workspaces/{workspace_id}/ingestion/sessions",
+        json={
+            "sample_lane": sample_lane,
+            "files": [
+                {
+                    "filename": filename,
+                    "size_bytes": len(payload),
+                    "last_modified_ms": last_modified_ms,
+                    "content_type": content_type,
+                }
+                for filename, payload, content_type, last_modified_ms in files
+            ],
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def upload_parts_for_file(
+    client: httpx.AsyncClient,
+    workspace_id: str,
+    session: dict,
+    filename: str,
+    payload: bytes,
+) -> None:
+    session_file = next(file for file in session["files"] if file["filename"] == filename)
+    for part_number in range(1, session_file["total_parts"] + 1):
+        start = (part_number - 1) * session["chunk_size_bytes"]
+        end = min(len(payload), start + session["chunk_size_bytes"])
+        response = await client.put(
+            f"/api/workspaces/{workspace_id}/ingestion/sessions/{session['id']}/files/{session_file['id']}/parts/{part_number}",
+            content=payload[start:end],
+        )
+        assert response.status_code == 200, response.text
+
+    response = await client.post(
+        f"/api/workspaces/{workspace_id}/ingestion/sessions/{session['id']}/files/{session_file['id']}/complete"
+    )
+    assert response.status_code == 200, response.text
+
+
+async def commit_session(
+    client: httpx.AsyncClient,
+    workspace_id: str,
+    session_id: str,
+) -> dict:
+    response = await client.post(
+        f"/api/workspaces/{workspace_id}/ingestion/sessions/{session_id}/commit"
     )
     assert response.status_code == 200, response.text
     return response.json()
 
 
-def test_creates_workspace_with_minimal_fields(client: TestClient):
-    payload = create_workspace(client, name="Feline Case", species="cat")
-
-    assert payload["display_name"] == "Feline Case"
-    assert payload["species"] == "cat"
-    assert payload["active_stage"] == "ingestion"
-    assert payload["ingestion"]["status"] == "empty"
-    assert payload["files"] == []
+async def load_workspace(client: httpx.AsyncClient, workspace_id: str) -> dict:
+    response = await client.get(f"/api/workspaces/{workspace_id}")
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
-def test_uploading_paired_fastq_gz_becomes_alignment_ready(
-    client: TestClient,
-    fake_storage: FakeStorage,
-    queued_batches: list[str],
-):
-    workspace = create_workspace(client)
-    payload = upload_files(
-        client,
-        workspace["id"],
-        [
-            ("sample_R1.fastq.gz", gzip_bytes(b"@r1\nACGT\n+\n!!!!\n"), "application/gzip"),
-            ("sample_R2.fastq.gz", gzip_bytes(b"@r2\nTGCA\n+\n!!!!\n"), "application/gzip"),
-        ],
-    )
-
-    assert queued_batches == []
-    assert payload["ingestion"]["status"] == "ready"
-    assert payload["ingestion"]["ready_for_alignment"] is True
-    assert payload["ingestion"]["canonical_file_count"] == 2
-    assert {file["file_role"] for file in payload["files"]} == {"source", "canonical"}
-    assert any("canonical/" in key for key in fake_storage.objects)
-
-
-def test_uncompressed_fastq_batch_queues_then_normalizes(
-    client: TestClient,
-    fake_storage: FakeStorage,
-    queued_batches: list[str],
-):
-    workspace = create_workspace(client)
-    payload = upload_files(
-        client,
-        workspace["id"],
-        [
-            ("sample_R1.fastq", b"@r1\nACGT\n+\n!!!!\n", "text/plain"),
-            ("sample_R2.fastq", b"@r2\nTGCA\n+\n!!!!\n", "text/plain"),
-        ],
-    )
-
-    assert payload["ingestion"]["status"] == "normalizing"
-    assert len(queued_batches) == 1
-
-    normalized = workspace_store.run_batch_normalization(queued_batches[0])
-
-    assert normalized.ingestion.status == "ready"
-    assert normalized.ingestion.ready_for_alignment is True
-    assert normalized.ingestion.canonical_file_count == 2
-    assert any(file.file_role == "canonical" for file in normalized.files)
-
-
-def test_unsupported_upload_returns_clear_error(
-    client: TestClient,
-    fake_storage: FakeStorage,
-    queued_batches: list[str],
-):
-    workspace = create_workspace(client)
-    response = client.post(
-        f"/api/workspaces/{workspace['id']}/files",
-        files=[("files", ("variants.vcf", b"##fileformat=VCFv4.2\n", "text/plain"))],
+@pytest.mark.anyio
+async def test_rejects_whitespace_only_workspace_names(client: httpx.AsyncClient):
+    response = await client.post(
+        "/api/workspaces",
+        json={"display_name": "   ", "species": "dog"},
     )
 
     assert response.status_code == 400
-    assert "Accepted inputs are FASTQ, BAM, and CRAM" in response.text
-    assert queued_batches == []
+    assert "cannot be empty" in response.text
 
 
-def test_failed_normalization_marks_latest_batch_failed(
-    client: TestClient,
+@pytest.mark.anyio
+async def test_lane_uploads_require_both_tumor_and_normal_before_alignment_ready(
+    client: httpx.AsyncClient,
     fake_storage: FakeStorage,
-    queued_batches: list[str],
+    queued_batches: list[tuple[str, str]],
+):
+    workspace = await create_workspace(client)
+
+    tumor_files = [
+        ("tumor_S1_L001_R1_001.fastq.gz", gzip_bytes(b"@r1\nACGT\n+\n!!!!\n"), "application/gzip", 1),
+        ("tumor_S1_L001_R2_001.fastq.gz", gzip_bytes(b"@r2\nTGCA\n+\n!!!!\n"), "application/gzip", 2),
+    ]
+    tumor_session = await create_session(client, workspace["id"], "tumor", tumor_files)
+    for filename, payload, _content_type, _last_modified in tumor_files:
+        await upload_parts_for_file(client, workspace["id"], tumor_session, filename, payload)
+
+    payload = await commit_session(client, workspace["id"], tumor_session["id"])
+    assert payload["ingestion"]["ready_for_alignment"] is False
+    assert payload["ingestion"]["lanes"]["tumor"]["status"] == "normalizing"
+    assert payload["ingestion"]["lanes"]["normal"]["status"] == "empty"
+
+    tumor_workspace_id, tumor_batch_id = queued_batches.pop(0)
+    normalized = workspace_store.run_batch_normalization(tumor_workspace_id, tumor_batch_id)
+    assert normalized.ingestion.lanes["tumor"].status == "ready"
+    assert normalized.ingestion.ready_for_alignment is False
+
+    normal_files = [
+        ("normal_S1_L001_R1_001.fastq.gz", gzip_bytes(b"@n1\nCCCC\n+\n!!!!\n"), "application/gzip", 3),
+        ("normal_S1_L001_R2_001.fastq.gz", gzip_bytes(b"@n2\nGGGG\n+\n!!!!\n"), "application/gzip", 4),
+    ]
+    normal_session = await create_session(client, workspace["id"], "normal", normal_files)
+    for filename, payload, _content_type, _last_modified in normal_files:
+        await upload_parts_for_file(client, workspace["id"], normal_session, filename, payload)
+
+    payload = await commit_session(client, workspace["id"], normal_session["id"])
+    assert payload["ingestion"]["ready_for_alignment"] is False
+    normal_workspace_id, normal_batch_id = queued_batches.pop(0)
+    normalized = workspace_store.run_batch_normalization(normal_workspace_id, normal_batch_id)
+
+    assert normalized.ingestion.ready_for_alignment is True
+    assert normalized.ingestion.lanes["tumor"].status == "ready"
+    assert normalized.ingestion.lanes["normal"].status == "ready"
+    assert {
+        file.sample_lane for file in normalized.files if file.file_role == "canonical"
+    } == {"tumor", "normal"}
+
+
+@pytest.mark.anyio
+async def test_resumable_session_preserves_uploaded_bytes(
+    client: httpx.AsyncClient,
+    fake_storage: FakeStorage,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    workspace = create_workspace(client)
-    payload = upload_files(
+    monkeypatch.setattr(workspace_store, "CHUNK_SIZE_BYTES", 8)
+
+    workspace = await create_workspace(client)
+    payload = b"ABCDEFGHIJKL"
+    session = await create_session(
         client,
         workspace["id"],
-        [("sample.bam", b"bam-placeholder", "application/octet-stream")],
+        "tumor",
+        [("tumor_R1.fastq.gz", payload, "application/gzip", 10)],
     )
+    session_file = session["files"][0]
 
-    assert payload["ingestion"]["status"] == "normalizing"
-    assert len(queued_batches) == 1
+    response = await client.put(
+        f"/api/workspaces/{workspace['id']}/ingestion/sessions/{session['id']}/files/{session_file['id']}/parts/1",
+        content=payload[:8],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["uploaded_bytes"] == 8
 
-    def fail_samtools(*args, **kwargs):
-        raise RuntimeError("samtools conversion failed")
-
-    monkeypatch.setattr(workspace_store, "run_samtools_fastq", fail_samtools)
-
-    with pytest.raises(RuntimeError):
-        workspace_store.run_batch_normalization(queued_batches[0])
-
-    failed_workspace = workspace_store.load_workspace(workspace["id"])
-    assert failed_workspace.ingestion.status == "failed"
-    assert any(file.status == "failed" for file in failed_workspace.files)
+    sessions = await client.get(f"/api/workspaces/{workspace['id']}/ingestion/sessions")
+    assert sessions.status_code == 200
+    restored = sessions.json()[0]
+    assert restored["files"][0]["uploaded_bytes"] == 8
+    assert restored["files"][0]["completed_part_numbers"] == [1]
 
 
-def test_latest_batch_controls_ingestion_readiness(
-    client: TestClient,
+@pytest.mark.anyio
+async def test_parts_can_arrive_out_of_order_and_duplicate_or_oversized_parts_fail(
+    client: httpx.AsyncClient,
     fake_storage: FakeStorage,
-    queued_batches: list[str],
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    workspace = create_workspace(client)
+    monkeypatch.setattr(workspace_store, "CHUNK_SIZE_BYTES", 4)
 
-    first_batch = upload_files(
+    workspace = await create_workspace(client)
+    payload = b"ABCDEFGHIJ"
+    session = await create_session(
         client,
         workspace["id"],
-        [
-            ("sample_R1.fastq.gz", gzip_bytes(b"@r1\nACGT\n+\n!!!!\n"), "application/gzip"),
-            ("sample_R2.fastq.gz", gzip_bytes(b"@r2\nTGCA\n+\n!!!!\n"), "application/gzip"),
+        "tumor",
+        [("tumor_R1.fastq.gz", payload, "application/gzip", 11)],
+    )
+    session_file = session["files"][0]
+    base_path = (
+        f"/api/workspaces/{workspace['id']}/ingestion/sessions/{session['id']}"
+        f"/files/{session_file['id']}/parts"
+    )
+
+    response = await client.put(f"{base_path}/3", content=payload[8:10])
+    assert response.status_code == 200, response.text
+    response = await client.put(f"{base_path}/2", content=payload[4:8])
+    assert response.status_code == 200, response.text
+    response = await client.put(f"{base_path}/1", content=payload[0:4])
+    assert response.status_code == 200, response.text
+
+    duplicate = await client.put(f"{base_path}/1", content=payload[0:4])
+    assert duplicate.status_code == 400
+    assert "already uploaded" in duplicate.text
+
+    oversized = await client.put(f"{base_path}/2", content=b"TOO-LONG")
+    assert oversized.status_code == 400
+
+    complete = await client.post(
+        f"/api/workspaces/{workspace['id']}/ingestion/sessions/{session['id']}/files/{session_file['id']}/complete"
+    )
+    assert complete.status_code == 200, complete.text
+
+
+@pytest.mark.anyio
+async def test_multi_file_fastq_lane_merges_into_one_canonical_pair(
+    client: httpx.AsyncClient,
+    fake_storage: FakeStorage,
+    queued_batches: list[tuple[str, str]],
+):
+    workspace = await create_workspace(client)
+    files = [
+        ("tumor_S1_L001_R1_001.fastq.gz", gzip_bytes(b"@r1a\nAAAA\n+\n!!!!\n"), "application/gzip", 20),
+        ("tumor_S1_L002_R1_001.fastq.gz", gzip_bytes(b"@r1b\nCCCC\n+\n!!!!\n"), "application/gzip", 21),
+        ("tumor_S1_L001_R2_001.fastq.gz", gzip_bytes(b"@r2a\nTTTT\n+\n!!!!\n"), "application/gzip", 22),
+        ("tumor_S1_L002_R2_001.fastq.gz", gzip_bytes(b"@r2b\nGGGG\n+\n!!!!\n"), "application/gzip", 23),
+    ]
+    session = await create_session(client, workspace["id"], "tumor", files)
+    for filename, payload, _content_type, _last_modified in files:
+        await upload_parts_for_file(client, workspace["id"], session, filename, payload)
+
+    await commit_session(client, workspace["id"], session["id"])
+    workspace_id, batch_id = queued_batches.pop(0)
+    normalized = workspace_store.run_batch_normalization(workspace_id, batch_id)
+
+    canonical_files = [file for file in normalized.files if file.file_role == "canonical"]
+    assert len(canonical_files) == 2
+    assert {file.filename for file in canonical_files} == {
+        "tumor_R1.normalized.fastq.gz",
+        "tumor_R2.normalized.fastq.gz",
+    }
+
+    r1_key = next(file.storage_key for file in canonical_files if file.read_pair == "R1")
+    with gzip.GzipFile(fileobj=io.BytesIO(fake_storage.objects[r1_key]), mode="rb") as handle:
+        assert handle.read() == b"@r1a\nAAAA\n+\n!!!!\n@r1b\nCCCC\n+\n!!!!\n"
+
+
+@pytest.mark.anyio
+async def test_mixed_fastq_and_bam_in_one_lane_fails_validation(
+    client: httpx.AsyncClient,
+    fake_storage: FakeStorage,
+):
+    workspace = await create_workspace(client)
+    files = [
+        ("tumor_R1.fastq.gz", gzip_bytes(b"@r1\nAAAA\n+\n!!!!\n"), "application/gzip", 30),
+        ("tumor.bam", b"bam-placeholder", "application/octet-stream", 31),
+    ]
+    session = await create_session(client, workspace["id"], "tumor", files)
+    for filename, payload, _content_type, _last_modified in files:
+        await upload_parts_for_file(client, workspace["id"], session, filename, payload)
+
+    response = await client.post(
+        f"/api/workspaces/{workspace['id']}/ingestion/sessions/{session['id']}/commit"
+    )
+    assert response.status_code == 400
+    assert "format family" in response.text
+
+    current = await load_workspace(client, workspace["id"])
+    assert current["ingestion"]["lanes"]["tumor"]["status"] == "failed"
+
+
+@pytest.mark.anyio
+async def test_unknown_read_pair_fastq_fails_validation(
+    client: httpx.AsyncClient,
+    fake_storage: FakeStorage,
+):
+    workspace = await create_workspace(client)
+    files = [("tumor.fastq.gz", gzip_bytes(b"@r1\nAAAA\n+\n!!!!\n"), "application/gzip", 40)]
+    session = await create_session(client, workspace["id"], "tumor", files)
+    await upload_parts_for_file(client, workspace["id"], session, files[0][0], files[0][1])
+
+    response = await client.post(
+        f"/api/workspaces/{workspace['id']}/ingestion/sessions/{session['id']}/commit"
+    )
+    assert response.status_code == 400
+    assert "must include R1 or R2" in response.text
+
+
+@pytest.mark.anyio
+async def test_multi_stem_fastq_lane_fails_validation(
+    client: httpx.AsyncClient,
+    fake_storage: FakeStorage,
+):
+    workspace = await create_workspace(client)
+    files = [
+        ("sampleA_R1.fastq.gz", gzip_bytes(b"@r1\nAAAA\n+\n!!!!\n"), "application/gzip", 50),
+        ("sampleB_R2.fastq.gz", gzip_bytes(b"@r2\nCCCC\n+\n!!!!\n"), "application/gzip", 51),
+    ]
+    session = await create_session(client, workspace["id"], "tumor", files)
+    for filename, payload, _content_type, _last_modified in files:
+        await upload_parts_for_file(client, workspace["id"], session, filename, payload)
+
+    response = await client.post(
+        f"/api/workspaces/{workspace['id']}/ingestion/sessions/{session['id']}/commit"
+    )
+    assert response.status_code == 400
+    assert "exactly one sample family" in response.text
+
+
+@pytest.mark.anyio
+async def test_new_tumor_upload_blocks_alignment_without_erasing_ready_normal_lane(
+    client: httpx.AsyncClient,
+    fake_storage: FakeStorage,
+    queued_batches: list[tuple[str, str]],
+):
+    workspace = await create_workspace(client)
+
+    baseline_files = {
+        "tumor": [
+            ("tumor_R1.fastq.gz", gzip_bytes(b"@tr1\nAAAA\n+\n!!!!\n"), "application/gzip", 60),
+            ("tumor_R2.fastq.gz", gzip_bytes(b"@tr2\nCCCC\n+\n!!!!\n"), "application/gzip", 61),
         ],
-    )
-    first_batch_id = first_batch["ingestion"]["active_batch_id"]
-    assert first_batch["ingestion"]["status"] == "ready"
+        "normal": [
+            ("normal_R1.fastq.gz", gzip_bytes(b"@nr1\nGGGG\n+\n!!!!\n"), "application/gzip", 62),
+            ("normal_R2.fastq.gz", gzip_bytes(b"@nr2\nTTTT\n+\n!!!!\n"), "application/gzip", 63),
+        ],
+    }
 
-    second_batch = upload_files(
+    for lane, files in baseline_files.items():
+        session = await create_session(client, workspace["id"], lane, files)
+        for filename, payload, _content_type, _last_modified in files:
+            await upload_parts_for_file(client, workspace["id"], session, filename, payload)
+        await commit_session(client, workspace["id"], session["id"])
+        queued_workspace_id, queued_batch_id = queued_batches.pop(0)
+        workspace_store.run_batch_normalization(queued_workspace_id, queued_batch_id)
+
+    ready_workspace = await load_workspace(client, workspace["id"])
+    assert ready_workspace["ingestion"]["ready_for_alignment"] is True
+
+    replacement_session = await create_session(
         client,
         workspace["id"],
-        [("sample_repeat_R1.fastq.gz", gzip_bytes(b"@r1\nACGT\n+\n!!!!\n"), "application/gzip")],
+        "tumor",
+        [("tumor_refresh_R1.fastq.gz", gzip_bytes(b"@new\nACAC\n+\n!!!!\n"), "application/gzip", 64)],
     )
 
-    assert second_batch["ingestion"]["active_batch_id"] != first_batch_id
-    assert second_batch["ingestion"]["status"] == "uploaded"
-    assert second_batch["ingestion"]["ready_for_alignment"] is False
-    assert second_batch["ingestion"]["missing_pairs"] == ["R2"]
+    refreshed = await load_workspace(client, workspace["id"])
+    assert refreshed["ingestion"]["ready_for_alignment"] is False
+    assert refreshed["ingestion"]["lanes"]["tumor"]["status"] == "uploading"
+    assert refreshed["ingestion"]["lanes"]["normal"]["status"] == "ready"
+    assert replacement_session["sample_lane"] == "tumor"

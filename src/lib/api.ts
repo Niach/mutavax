@@ -1,8 +1,15 @@
 import type {
   CreateWorkspaceInput,
+  IngestionLaneSummary,
   IngestionSummary,
   Job,
   PipelineStageId,
+  ReadPair,
+  SampleLane,
+  UploadPartResult,
+  UploadSession,
+  UploadSessionCreateInput,
+  UploadSessionFile,
   Workspace,
   WorkspaceFile,
   WorkspaceSpecies,
@@ -19,6 +26,7 @@ type WorkspaceFileDto = {
   id: string;
   batch_id: string;
   source_file_id?: string | null;
+  sample_lane: SampleLane;
   filename: string;
   format: WorkspaceFile["format"];
   file_role: WorkspaceFile["fileRole"];
@@ -30,14 +38,22 @@ type WorkspaceFileDto = {
   error?: string | null;
 };
 
-type IngestionSummaryDto = {
+type IngestionLaneSummaryDto = {
   active_batch_id?: string | null;
-  status: IngestionSummary["status"];
+  sample_lane: SampleLane;
+  status: IngestionLaneSummary["status"];
   ready_for_alignment: boolean;
   source_file_count: number;
   canonical_file_count: number;
-  missing_pairs: IngestionSummary["missingPairs"];
+  missing_pairs: ReadPair[];
+  blocking_issues: string[];
   updated_at?: string | null;
+};
+
+type IngestionSummaryDto = {
+  status: IngestionSummary["status"];
+  ready_for_alignment: boolean;
+  lanes: Record<SampleLane, IngestionLaneSummaryDto>;
 };
 
 type WorkspaceDto = {
@@ -47,6 +63,40 @@ type WorkspaceDto = {
   active_stage: PipelineStageId;
   ingestion: IngestionSummaryDto;
   files: WorkspaceFileDto[];
+  created_at: string;
+  updated_at: string;
+};
+
+type UploadSessionPartDto = {
+  uploaded_bytes: number;
+  total_parts: number;
+  completed_part_numbers: number[];
+};
+
+type UploadSessionFileDto = {
+  id: string;
+  sample_lane: SampleLane;
+  filename: string;
+  format: UploadSessionFile["format"];
+  read_pair: UploadSessionFile["readPair"];
+  size_bytes: number;
+  uploaded_bytes: number;
+  total_parts: number;
+  last_modified_ms: number;
+  fingerprint: string;
+  content_type?: string | null;
+  status: UploadSessionFile["status"];
+  error?: string | null;
+  completed_part_numbers: number[];
+};
+
+type UploadSessionDto = {
+  id: string;
+  sample_lane: SampleLane;
+  status: UploadSession["status"];
+  chunk_size_bytes: number;
+  error?: string | null;
+  files: UploadSessionFileDto[];
   created_at: string;
   updated_at: string;
 };
@@ -68,6 +118,7 @@ function mapWorkspaceFile(dto: WorkspaceFileDto): WorkspaceFile {
     id: dto.id,
     batchId: dto.batch_id,
     sourceFileId: dto.source_file_id,
+    sampleLane: dto.sample_lane,
     filename: dto.filename,
     format: dto.format,
     fileRole: dto.file_role,
@@ -80,15 +131,28 @@ function mapWorkspaceFile(dto: WorkspaceFileDto): WorkspaceFile {
   };
 }
 
-function mapIngestionSummary(dto: IngestionSummaryDto): IngestionSummary {
+function mapIngestionLaneSummary(dto: IngestionLaneSummaryDto): IngestionLaneSummary {
   return {
     activeBatchId: dto.active_batch_id,
+    sampleLane: dto.sample_lane,
     status: dto.status,
     readyForAlignment: dto.ready_for_alignment,
     sourceFileCount: dto.source_file_count,
     canonicalFileCount: dto.canonical_file_count,
     missingPairs: dto.missing_pairs,
+    blockingIssues: dto.blocking_issues,
     updatedAt: dto.updated_at,
+  };
+}
+
+function mapIngestionSummary(dto: IngestionSummaryDto): IngestionSummary {
+  return {
+    status: dto.status,
+    readyForAlignment: dto.ready_for_alignment,
+    lanes: {
+      tumor: mapIngestionLaneSummary(dto.lanes.tumor),
+      normal: mapIngestionLaneSummary(dto.lanes.normal),
+    },
   };
 }
 
@@ -100,6 +164,46 @@ function mapWorkspace(dto: WorkspaceDto): Workspace {
     activeStage: dto.active_stage,
     ingestion: mapIngestionSummary(dto.ingestion),
     files: dto.files.map(mapWorkspaceFile),
+    createdAt: dto.created_at,
+    updatedAt: dto.updated_at,
+  };
+}
+
+function mapUploadPartResult(dto: UploadSessionPartDto): UploadPartResult {
+  return {
+    uploadedBytes: dto.uploaded_bytes,
+    totalParts: dto.total_parts,
+    completedPartNumbers: dto.completed_part_numbers,
+  };
+}
+
+function mapUploadSessionFile(dto: UploadSessionFileDto): UploadSessionFile {
+  return {
+    id: dto.id,
+    sampleLane: dto.sample_lane,
+    filename: dto.filename,
+    format: dto.format,
+    readPair: dto.read_pair,
+    sizeBytes: dto.size_bytes,
+    uploadedBytes: dto.uploaded_bytes,
+    totalParts: dto.total_parts,
+    lastModifiedMs: dto.last_modified_ms,
+    fingerprint: dto.fingerprint,
+    contentType: dto.content_type,
+    status: dto.status,
+    error: dto.error,
+    completedPartNumbers: dto.completed_part_numbers,
+  };
+}
+
+function mapUploadSession(dto: UploadSessionDto): UploadSession {
+  return {
+    id: dto.id,
+    sampleLane: dto.sample_lane,
+    status: dto.status,
+    chunkSizeBytes: dto.chunk_size_bytes,
+    error: dto.error,
+    files: dto.files.map(mapUploadSessionFile),
     createdAt: dto.created_at,
     updatedAt: dto.updated_at,
   };
@@ -124,7 +228,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const isFormData =
     typeof FormData !== "undefined" && options?.body instanceof FormData;
 
-  if (!isFormData && !headers.has("Content-Type")) {
+  if (!isFormData && !headers.has("Content-Type") && options?.body) {
     headers.set("Content-Type", "application/json");
   }
 
@@ -143,7 +247,90 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
     throw new Error((detail ?? payload) || `API error: ${res.status}`);
   }
+
+  if (res.status === 204) {
+    return undefined as T;
+  }
+
   return res.json();
+}
+
+function uploadBinaryWithProgress(
+  path: string,
+  body: Blob,
+  {
+    onProgress,
+    signal,
+  }: {
+    onProgress?: (loaded: number, total: number) => void;
+    signal?: AbortSignal;
+  } = {}
+): Promise<UploadPartResult> {
+  if (typeof XMLHttpRequest === "undefined") {
+    throw new Error("Chunk uploads are only supported in the browser");
+  }
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+
+    const cleanup = () => {
+      if (signal) {
+        signal.removeEventListener("abort", handleAbort);
+      }
+    };
+
+    const handleAbort = () => {
+      xhr.abort();
+      cleanup();
+      reject(new DOMException("Upload aborted", "AbortError"));
+    };
+
+    xhr.open("PUT", `${API_BASE}${path}`);
+    xhr.responseType = "json";
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) {
+        onProgress?.(event.loaded, body.size);
+        return;
+      }
+      onProgress?.(event.loaded, event.total);
+    };
+
+    xhr.onerror = () => {
+      cleanup();
+      reject(new Error("Chunk upload failed"));
+    };
+
+    xhr.onabort = () => {
+      cleanup();
+      reject(new DOMException("Upload aborted", "AbortError"));
+    };
+
+    xhr.onload = () => {
+      cleanup();
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const detail =
+          typeof xhr.response === "object" && xhr.response?.detail
+            ? String(xhr.response.detail)
+            : xhr.responseText || `API error: ${xhr.status}`;
+        reject(new Error(detail));
+        return;
+      }
+
+      resolve(mapUploadPartResult(xhr.response as UploadSessionPartDto));
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        handleAbort();
+        return;
+      }
+      signal.addEventListener("abort", handleAbort, { once: true });
+    }
+
+    xhr.send(body);
+  });
 }
 
 export const api = {
@@ -163,19 +350,67 @@ export const api = {
         }),
       })
     ),
-  uploadWorkspaceFiles: async (workspaceId: string, files: File[]) => {
-    const formData = new FormData();
-    for (const file of files) {
-      formData.append("files", file);
+  listUploadSessions: async (workspaceId: string) =>
+    (
+      await request<UploadSessionDto[]>(
+        `/api/workspaces/${workspaceId}/ingestion/sessions`
+      )
+    ).map(mapUploadSession),
+  createUploadSession: async (
+    workspaceId: string,
+    input: UploadSessionCreateInput
+  ) =>
+    mapUploadSession(
+      await request<UploadSessionDto>(
+        `/api/workspaces/${workspaceId}/ingestion/sessions`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            sample_lane: input.sampleLane,
+            files: input.files.map((file) => ({
+              filename: file.filename,
+              size_bytes: file.sizeBytes,
+              last_modified_ms: file.lastModifiedMs,
+              content_type: file.contentType,
+            })),
+          }),
+        }
+      )
+    ),
+  uploadUploadSessionPart: (
+    workspaceId: string,
+    sessionId: string,
+    fileId: string,
+    partNumber: number,
+    body: Blob,
+    options?: {
+      onProgress?: (loaded: number, total: number) => void;
+      signal?: AbortSignal;
     }
-
-    return mapWorkspace(
-      await request<WorkspaceDto>(`/api/workspaces/${workspaceId}/files`, {
-        method: "POST",
-        body: formData,
-      })
-    );
-  },
+  ) =>
+    uploadBinaryWithProgress(
+      `/api/workspaces/${workspaceId}/ingestion/sessions/${sessionId}/files/${fileId}/parts/${partNumber}`,
+      body,
+      options
+    ),
+  completeUploadSessionFile: async (
+    workspaceId: string,
+    sessionId: string,
+    fileId: string
+  ) =>
+    mapUploadSessionFile(
+      await request<UploadSessionFileDto>(
+        `/api/workspaces/${workspaceId}/ingestion/sessions/${sessionId}/files/${fileId}/complete`,
+        { method: "POST" }
+      )
+    ),
+  commitUploadSession: async (workspaceId: string, sessionId: string) =>
+    mapWorkspace(
+      await request<WorkspaceDto>(
+        `/api/workspaces/${workspaceId}/ingestion/sessions/${sessionId}/commit`,
+        { method: "POST" }
+      )
+    ),
   updateWorkspaceActiveStage: async (
     workspaceId: string,
     activeStage: PipelineStageId
