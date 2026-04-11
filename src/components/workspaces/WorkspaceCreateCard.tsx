@@ -39,7 +39,7 @@ export default function WorkspaceCreateCard({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("");
-  const [species, setSpecies] = useState<"human" | "dog" | "cat">("dog");
+  const [species, setSpecies] = useState<"human" | "dog" | "cat">("human");
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();

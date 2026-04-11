@@ -502,6 +502,12 @@ export const api = {
         { method: "DELETE" }
       )
     ),
+  resetWorkspaceIngestion: async (workspaceId: string) =>
+    mapWorkspace(
+      await request<WorkspaceDto>(`/api/workspaces/${workspaceId}/ingestion`, {
+        method: "DELETE",
+      })
+    ),
   updateWorkspaceActiveStage: async (
     workspaceId: string,
     activeStage: PipelineStageId

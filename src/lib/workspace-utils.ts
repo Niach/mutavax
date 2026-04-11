@@ -28,6 +28,14 @@ export interface WorkspaceReadiness {
   readyForAlignment: boolean;
 }
 
+export interface RequiredOutputStatus {
+  id: `${SampleLane}-${Extract<ReadPair, "R1" | "R2">}`;
+  sampleLane: SampleLane;
+  readPair: Extract<ReadPair, "R1" | "R2">;
+  label: string;
+  ready: boolean;
+}
+
 function getLaneBatchFiles(
   workspace: Workspace,
   sampleLane: SampleLane
@@ -40,6 +48,40 @@ function getLaneBatchFiles(
   return workspace.files.filter(
     (file) => file.sampleLane === sampleLane && file.batchId === lane.activeBatchId
   );
+}
+
+export function getLaneReadyCanonicalPairs(
+  workspace: Workspace,
+  sampleLane: SampleLane
+): Array<Extract<ReadPair, "R1" | "R2">> {
+  return getLaneBatchFiles(workspace, sampleLane)
+    .filter(
+      (file) =>
+        file.fileRole === "canonical" &&
+        file.status === "ready" &&
+        (file.readPair === "R1" || file.readPair === "R2")
+    )
+    .map((file) => file.readPair as Extract<ReadPair, "R1" | "R2">);
+}
+
+export function getWorkspaceRequiredOutputs(
+  workspace: Workspace
+): RequiredOutputStatus[] {
+  return (["tumor", "normal"] as const).flatMap((sampleLane) => {
+    const readyPairs = new Set(getLaneReadyCanonicalPairs(workspace, sampleLane));
+    return (["R1", "R2"] as const).map((readPair) => ({
+      id: `${sampleLane}-${readPair}`,
+      sampleLane,
+      readPair,
+      label: `${formatLaneLabel(sampleLane)} ${readPair}`,
+      ready: readyPairs.has(readPair),
+    }));
+  });
+}
+
+export function countReadyRequiredOutputs(workspace: Workspace) {
+  return getWorkspaceRequiredOutputs(workspace).filter((output) => output.ready)
+    .length;
 }
 
 export function analyzeWorkspace(workspace: Workspace): WorkspaceReadiness {
@@ -149,7 +191,7 @@ export function getLaneIssueLabel(summary: Workspace["ingestion"]["lanes"]["tumo
   );
 
   if (missingPairs.length > 0) {
-    return `Missing ${missingPairs.join(" + ")}`;
+    return `Need ${missingPairs.join(" + ")}`;
   }
 
   return getCompactIssueLabel(summary.blockingIssues[0]) ?? "Upload failed";
@@ -157,7 +199,7 @@ export function getLaneIssueLabel(summary: Workspace["ingestion"]["lanes"]["tumo
 
 export function getLaneStatusLabel(summary: Workspace["ingestion"]["lanes"]["tumor"]) {
   if (summary.status === "ready") {
-    return "Ready";
+    return "2/2 ready";
   }
   if (summary.status === "normalizing") {
     return "Preparing";

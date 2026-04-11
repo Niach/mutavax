@@ -22,6 +22,7 @@ from app.services.workspace_store import (
     list_workspaces,
     load_ingestion_lane_preview,
     load_workspace,
+    reset_workspace_ingestion,
     update_workspace_active_stage,
     upload_session_part,
 )
@@ -184,6 +185,19 @@ async def delete_upload_session_route(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except Exception as error:
         raise unexpected_workspace_error("Upload session delete", error) from error
+
+
+@router.delete(
+    "/{workspace_id}/ingestion",
+    response_model=WorkspaceResponse,
+)
+async def reset_workspace_ingestion_route(workspace_id: str):
+    try:
+        return reset_workspace_ingestion(workspace_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Workspace ingestion reset", error) from error
 
 
 @router.patch("/{workspace_id}/active-stage", response_model=WorkspaceResponse)

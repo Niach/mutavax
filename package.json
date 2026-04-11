@@ -12,7 +12,8 @@
     "test:browser:real-data": "playwright test tests/e2e/ingestion-real-data.spec.ts",
     "test:real-data": "npm run test:backend:real-data && npm run test:browser:real-data",
     "sample-data:smoke": "python3 scripts/fetch_seqc2_sample_data.py --mode smoke",
-    "sample-data:full": "python3 scripts/fetch_seqc2_sample_data.py --mode full"
+    "sample-data:full": "python3 scripts/fetch_seqc2_sample_data.py --mode full",
+    "sample-data:alignment": "python3 scripts/fetch_alignment_container_smoke_data.py"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",

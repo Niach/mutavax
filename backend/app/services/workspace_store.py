@@ -82,6 +82,14 @@ class LanePreviewUnavailableError(RuntimeError):
     pass
 
 
+PAIRED_OUTPUT_REQUIRED_ISSUE = (
+    "Paired-end required. This lane must have canonical R1 and R2 before alignment."
+)
+ALIGNMENT_CONTAINER_PAIRED_OUTPUT_ISSUE = (
+    "Paired-end required. BAM/CRAM normalization did not produce both R1 and R2 FASTQ outputs."
+)
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -465,16 +473,16 @@ def summarize_batch(batch: Optional[IngestionBatchRecord], sample_lane: SampleLa
     ready_pairs = {ReadPair(file.read_pair) for file in canonical_files}
 
     read_layout: Optional[ReadLayout] = None
-    if ReadPair.SE in ready_pairs:
-        read_layout = ReadLayout.SINGLE
-    elif ReadPair.R1 in ready_pairs or ReadPair.R2 in ready_pairs:
+    if ReadPair.R1 in ready_pairs or ReadPair.R2 in ready_pairs:
         read_layout = ReadLayout.PAIRED
+    elif ReadPair.SE in ready_pairs:
+        read_layout = ReadLayout.SINGLE
     else:
         source_validation = validate_lane_files(source_files)
         read_layout = source_validation.read_layout
 
     missing_pairs: list[ReadPair] = []
-    if read_layout == ReadLayout.PAIRED and canonical_files:
+    if canonical_files:
         if ReadPair.R1 not in ready_pairs:
             missing_pairs.append(ReadPair.R1)
         if ReadPair.R2 not in ready_pairs:
@@ -488,7 +496,27 @@ def summarize_batch(batch: Optional[IngestionBatchRecord], sample_lane: SampleLa
     )
 
     status = IngestionStatus(batch.status)
-    ready_for_alignment = status == IngestionStatus.READY
+    has_paired_outputs = ready_pairs >= {ReadPair.R1, ReadPair.R2}
+    has_stale_single_output = ReadPair.SE in ready_pairs and not has_paired_outputs
+
+    if canonical_files and not has_paired_outputs:
+        status = IngestionStatus.FAILED
+        issue = (
+            ALIGNMENT_CONTAINER_PAIRED_OUTPUT_ISSUE
+            if has_stale_single_output
+            else PAIRED_OUTPUT_REQUIRED_ISSUE
+        )
+        if issue not in blocking_issues:
+            blocking_issues.append(issue)
+
+    if (
+        status == IngestionStatus.FAILED
+        and not missing_pairs
+        and any("paired-end required" in issue.lower() for issue in blocking_issues)
+    ):
+        missing_pairs = [ReadPair.R1, ReadPair.R2]
+
+    ready_for_alignment = status == IngestionStatus.READY and has_paired_outputs
 
     return IngestionLaneSummaryResponse(
         active_batch_id=batch.id,
@@ -1042,8 +1070,6 @@ def batch_status_from_files(batch: IngestionBatchRecord) -> IngestionStatus:
     }
     if ready_pairs >= {ReadPair.R1, ReadPair.R2}:
         return IngestionStatus.READY
-    if ReadPair.SE in ready_pairs:
-        return IngestionStatus.READY
     if any(file.status == WorkspaceFileStatus.NORMALIZING.value for file in source_files):
         return IngestionStatus.NORMALIZING
     return IngestionStatus.UPLOADED
@@ -1188,6 +1214,55 @@ def delete_upload_session(workspace_id: str, session_id: str) -> WorkspaceRespon
     return response
 
 
+def reset_workspace_ingestion(workspace_id: str) -> WorkspaceResponse:
+    storage = get_storage()
+    aborts: list[tuple[str, str]] = []
+    deletions: set[str] = set()
+
+    with session_scope() as session:
+        workspace = get_workspace_record(session, workspace_id)
+
+        for workspace_file in workspace.files:
+            if workspace_file.storage_key:
+                deletions.add(workspace_file.storage_key)
+
+        for upload_session in list(workspace.upload_sessions):
+            for upload_file in upload_session.files:
+                if upload_file.storage_key:
+                    deletions.add(upload_file.storage_key)
+                if (
+                    upload_session.status != UploadSessionStatus.COMMITTED.value
+                    and upload_file.multipart_upload_id
+                    and upload_file.storage_key
+                ):
+                    aborts.append((upload_file.storage_key, upload_file.multipart_upload_id))
+            session.delete(upload_session)
+
+        for batch in list(workspace.batches):
+            session.delete(batch)
+
+        workspace.active_stage = PipelineStageId.INGESTION.value
+        workspace.updated_at = utc_now()
+        session.add(workspace)
+        session.flush()
+        session.expire(workspace, ["batches", "files", "upload_sessions"])
+        response = serialize_workspace(get_workspace_record(session, workspace_id))
+
+    for storage_key, upload_id in aborts:
+        try:
+            storage.abort_multipart_upload(storage_key, upload_id)
+        except Exception:
+            pass
+
+    for storage_key in deletions:
+        try:
+            storage.delete_object(storage_key)
+        except Exception:
+            pass
+
+    return response
+
+
 def run_samtools_fastq(
     source_path: Path,
     r1_path: Path,
@@ -1195,6 +1270,21 @@ def run_samtools_fastq(
     se_path: Path,
     is_cram: bool,
 ) -> None:
+    reference_path = os.getenv("SAMTOOLS_REFERENCE_FASTA")
+    collated_path = source_path.parent / f"{source_path.name}.collated.bam"
+
+    collate_command = [
+        "samtools",
+        "collate",
+        "-u",
+        "-o",
+        str(collated_path),
+    ]
+    if is_cram and reference_path:
+        collate_command.extend(["--reference", reference_path])
+    collate_command.append(str(source_path))
+    subprocess.run(collate_command, check=True, capture_output=True, text=True)
+
     command = [
         "samtools",
         "fastq",
@@ -1209,11 +1299,7 @@ def run_samtools_fastq(
         "-n",
     ]
 
-    reference_path = os.getenv("SAMTOOLS_REFERENCE_FASTA")
-    if is_cram and reference_path:
-        command.extend(["--reference", reference_path])
-
-    command.append(str(source_path))
+    command.append(str(collated_path))
     subprocess.run(command, check=True, capture_output=True, text=True)
 
 
@@ -1310,14 +1396,8 @@ def normalize_alignment_container(
             (ReadPair.R1, r1_fastq_path),
             (ReadPair.R2, r2_fastq_path),
         ]
-    elif se_ok and not r1_ok and not r2_ok:
-        outputs = [(ReadPair.SE, se_fastq_path)]
-    elif r1_ok and not r2_ok and not se_ok:
-        outputs = [(ReadPair.SE, r1_fastq_path)]
     else:
-        raise RuntimeError(
-            f"samtools did not produce usable FASTQ output for {source_file.filename}"
-        )
+        raise RuntimeError(ALIGNMENT_CONTAINER_PAIRED_OUTPUT_ISSUE)
 
     for read_pair, plain_path in outputs:
         canonical_filename = build_canonical_filename(SampleLane(batch.sample_lane), read_pair)
@@ -1343,20 +1423,20 @@ def normalize_alignment_container(
 
 
 def run_batch_normalization(workspace_id: str, batch_id: str) -> WorkspaceResponse:
-    with session_scope() as session:
-        batch = get_batch_record(session, workspace_id, batch_id)
-        workspace = batch.workspace
-        batch.error = None
-        batch.status = IngestionStatus.NORMALIZING.value
-        batch.updated_at = utc_now()
-        workspace.updated_at = batch.updated_at
-        session.add(batch)
+    try:
+        with session_scope() as session:
+            batch = get_batch_record(session, workspace_id, batch_id)
+            workspace = batch.workspace
+            batch.error = None
+            batch.status = IngestionStatus.NORMALIZING.value
+            batch.updated_at = utc_now()
+            workspace.updated_at = batch.updated_at
+            session.add(batch)
 
-        source_files = [
-            file for file in batch.files if file.file_role == WorkspaceFileRole.SOURCE.value
-        ]
+            source_files = [
+                file for file in batch.files if file.file_role == WorkspaceFileRole.SOURCE.value
+            ]
 
-        try:
             validation = validate_lane_files(source_files)
             if validation.blocking_issues:
                 raise RuntimeError(" | ".join(validation.blocking_issues))
@@ -1382,20 +1462,14 @@ def run_batch_normalization(workspace_id: str, batch_id: str) -> WorkspaceRespon
                     )
                 else:
                     raise RuntimeError("Unsupported lane format")
-        except Exception as error:
-            batch.error = str(error)
-            for source_file in source_files:
-                source_file.status = WorkspaceFileStatus.FAILED.value
-                source_file.error = str(error)
-                session.add(source_file)
+
             refresh_batch_status(batch)
             session.add(batch)
-            raise
-
-        refresh_batch_status(batch)
-        session.add(batch)
-        session.flush()
-        return serialize_workspace(workspace)
+            session.flush()
+            return serialize_workspace(workspace)
+    except Exception as error:
+        mark_batch_failed(workspace_id, batch_id, str(error))
+        raise
 
 
 def upload_workspace_files(workspace_id: str, uploads: list[UploadFile]) -> WorkspaceResponse:

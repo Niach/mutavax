@@ -161,8 +161,8 @@ export function LaneStagingPanel({
         >
           {validation.reason ??
             (ready
-              ? `${files.length} file${files.length === 1 ? "" : "s"} ready · paired-end detected`
-              : "Add files to begin")}
+              ? "Ready to upload"
+              : "Add R1 + R2 or one BAM/CRAM")}
         </p>
         <Button
           variant="outline"

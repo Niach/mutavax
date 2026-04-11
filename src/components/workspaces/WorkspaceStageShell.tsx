@@ -3,20 +3,23 @@
 import Link from "next/link";
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Dna, LockKeyhole, Plus } from "lucide-react";
+import { Dna, LockKeyhole, Plus, RotateCcw } from "lucide-react";
 
 import IngestionStagePanel from "@/components/workspaces/IngestionStagePanel";
 import FutureStagePanel from "@/components/workspaces/FutureStagePanel";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 import type { PipelineStageId, Workspace } from "@/lib/types";
 import { PIPELINE_STAGES } from "@/lib/types";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
+  countReadyRequiredOutputs,
   formatLaneLabel,
   formatSpeciesLabel,
   getLaneStatusLabel,
+  getWorkspaceRequiredOutputs,
 } from "@/lib/workspace-utils";
 
 function mergeWorkspaces(workspaces: Workspace[], workspace: Workspace) {
@@ -43,8 +46,11 @@ export default function WorkspaceStageShell({
   const [workspaces, setWorkspaces] = useState(
     mergeWorkspaces(initialWorkspaces, initialWorkspace)
   );
+  const [isResetting, setIsResetting] = useState(false);
 
   const alignmentLocked = !workspace.ingestion.readyForAlignment;
+  const requiredOutputs = getWorkspaceRequiredOutputs(workspace);
+  const readyOutputCount = countReadyRequiredOutputs(workspace);
 
   useEffect(() => {
     if (workspace.activeStage === currentStageId) {
@@ -79,6 +85,34 @@ export default function WorkspaceStageShell({
     setWorkspaces((current) => mergeWorkspaces(current, updatedWorkspace));
   }
 
+  async function handleResetWorkspace() {
+    if (
+      !window.confirm(
+        `Reset all ingestion data in "${workspace.displayName}"?`
+      )
+    ) {
+      return;
+    }
+
+    setIsResetting(true);
+    try {
+      const updatedWorkspace = await api.resetWorkspaceIngestion(workspace.id);
+      handleWorkspaceChange(updatedWorkspace);
+      startTransition(() => {
+        router.push(`/workspaces/${workspace.id}/ingestion`);
+        router.refresh();
+      });
+    } catch (error) {
+      window.alert(
+        error instanceof Error
+          ? error.message
+          : "Unable to reset this workspace"
+      );
+    } finally {
+      setIsResetting(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(21,128,61,0.08),_transparent_22%),radial-gradient(circle_at_bottom_right,_rgba(14,165,233,0.08),_transparent_24%),linear-gradient(180deg,_#f8fbf8_0%,_#f2f6f3_100%)]">
       <header className="border-b border-black/6 bg-white/85 backdrop-blur">
@@ -96,16 +130,26 @@ export default function WorkspaceStageShell({
                 <Badge variant="outline">
                   {formatSpeciesLabel(workspace.species)}
                 </Badge>
-                <span className="text-xs text-muted-foreground">
-                  {workspace.ingestion.readyForAlignment
-                    ? "Tumor + normal intake ready"
-                    : "Ingestion is still blocking alignment"}
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {readyOutputCount}/4 paired ready
                 </span>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => void handleResetWorkspace()}
+              disabled={isResetting}
+              data-testid="workspace-reset-button"
+              className="h-9 rounded-xl px-3 text-slate-500 hover:text-rose-700"
+            >
+              <RotateCcw className="size-3.5" />
+              {isResetting ? "Resetting" : "Reset"}
+            </Button>
             <select
               value={workspace.id}
               onChange={(event) =>
@@ -126,6 +170,7 @@ export default function WorkspaceStageShell({
             <Link
               href="/"
               className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-black/10 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              aria-label="New workspace"
             >
               <Plus className="size-4" />
             </Link>
@@ -167,7 +212,7 @@ export default function WorkspaceStageShell({
                       <div>{stage.name}</div>
                       {isAlignmentLocked && (
                         <div className="text-xs font-normal text-slate-500">
-                          Wait for both lanes
+                          Wait for 4 outputs
                         </div>
                       )}
                     </div>
@@ -206,11 +251,16 @@ export default function WorkspaceStageShell({
 
           <main className="space-y-4">
             {currentStageId === "ingestion" ? (
-              <div className="border-b border-black/8 pb-4">
+              <div className="space-y-4 border-b border-black/8 pb-4">
                 <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-                  <h2 className="text-3xl font-semibold tracking-tight">
-                    {currentStage.name}
-                  </h2>
+                  <div className="space-y-1">
+                    <h2 className="text-3xl font-semibold tracking-tight">
+                      {currentStage.name}
+                    </h2>
+                    <p className="text-sm text-slate-500 tabular-nums">
+                      {readyOutputCount}/4 outputs ready
+                    </p>
+                  </div>
 
                   <div className="flex flex-wrap items-center gap-2">
                     <span
@@ -230,7 +280,7 @@ export default function WorkspaceStageShell({
                           alignmentLocked ? "bg-slate-300" : "bg-emerald-500"
                         )}
                       />
-                      {alignmentLocked ? "Alignment locked" : "Alignment ready"}
+                      {alignmentLocked ? "Locked" : "Ready"}
                     </span>
 
                     {(["tumor", "normal"] as const).map((lane) => {
@@ -268,6 +318,40 @@ export default function WorkspaceStageShell({
                         </span>
                       );
                     })}
+                  </div>
+                </div>
+
+                <div className="overflow-hidden rounded-[22px] border border-black/6 bg-white/70 shadow-sm shadow-black/5 backdrop-blur">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/6 px-4 py-3 sm:px-5">
+                    <div className="font-mono text-[10px] tracking-[0.24em] text-slate-500 uppercase">
+                      Requirements
+                    </div>
+                    <div className="text-sm font-medium tabular-nums text-slate-700">
+                      {readyOutputCount}/4
+                    </div>
+                  </div>
+                  <div className="grid gap-2 px-4 py-3 sm:grid-cols-2 sm:px-5 lg:grid-cols-4">
+                    {requiredOutputs.map((output) => (
+                      <div
+                        key={output.id}
+                        className={cn(
+                          "flex items-center justify-between rounded-2xl border px-3 py-2 text-sm",
+                          output.ready
+                            ? "border-emerald-200 bg-emerald-50/80 text-emerald-900"
+                            : "border-black/8 bg-white text-slate-600"
+                        )}
+                      >
+                        <span>{output.label}</span>
+                        <span
+                          className={cn(
+                            "font-mono text-[10px] tracking-[0.16em] uppercase",
+                            output.ready ? "text-emerald-700" : "text-slate-400"
+                          )}
+                        >
+                          {output.ready ? "Ready" : "Open"}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>

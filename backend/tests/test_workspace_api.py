@@ -25,6 +25,8 @@ class FakeStorage:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
         self.multipart_uploads: dict[str, dict[int, bytes]] = {}
+        self.deleted_keys: list[str] = []
+        self.aborted_uploads: list[tuple[str, str]] = []
 
     def upload_fileobj(self, fileobj, key: str, content_type: Optional[str] = None) -> None:
         fileobj.seek(0)
@@ -69,6 +71,11 @@ class FakeStorage:
 
     def abort_multipart_upload(self, key: str, upload_id: str) -> None:
         self.multipart_uploads.pop(upload_id, None)
+        self.aborted_uploads.append((key, upload_id))
+
+    def delete_object(self, key: str) -> None:
+        self.objects.pop(key, None)
+        self.deleted_keys.append(key)
 
 
 def gzip_bytes(payload: bytes) -> bytes:
@@ -605,6 +612,224 @@ async def test_delete_upload_session_clears_lane_state(
     )
     assert sessions.status_code == 200
     assert sessions.json() == []
+
+
+@pytest.mark.anyio
+async def test_reset_workspace_ingestion_clears_batches_files_and_sessions(
+    client: httpx.AsyncClient,
+    fake_storage: FakeStorage,
+    queued_batches: list[tuple[str, str]],
+):
+    workspace = await create_workspace(client)
+    tumor_files = [
+        ("tumor_R1.fastq.gz", gzip_bytes(b"@tr1\nAAAA\n+\n!!!!\n"), "application/gzip", 72),
+        ("tumor_R2.fastq.gz", gzip_bytes(b"@tr2\nCCCC\n+\n!!!!\n"), "application/gzip", 73),
+    ]
+    tumor_session = await create_session(client, workspace["id"], "tumor", tumor_files)
+    for filename, payload, _content_type, _last_modified in tumor_files:
+        await upload_parts_for_file(client, workspace["id"], tumor_session, filename, payload)
+    await commit_session(client, workspace["id"], tumor_session["id"])
+    queued_workspace_id, queued_batch_id = queued_batches.pop(0)
+    normalized = workspace_store.run_batch_normalization(
+        queued_workspace_id, queued_batch_id
+    ).model_dump()
+
+    pending_session = await create_session(
+        client,
+        workspace["id"],
+        "normal",
+        [
+            ("normal_R1.fastq.gz", gzip_bytes(b"@nr1\nGGGG\n+\n!!!!\n"), "application/gzip", 74),
+            ("normal_R2.fastq.gz", gzip_bytes(b"@nr2\nTTTT\n+\n!!!!\n"), "application/gzip", 75),
+        ],
+    )
+
+    stage_response = await client.patch(
+        f"/api/workspaces/{workspace['id']}/active-stage",
+        json={"active_stage": "alignment"},
+    )
+    assert stage_response.status_code == 200, stage_response.text
+
+    response = await client.delete(f"/api/workspaces/{workspace['id']}/ingestion")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+
+    assert payload["active_stage"] == "ingestion"
+    assert payload["files"] == []
+    assert payload["ingestion"]["status"] == "empty"
+    assert payload["ingestion"]["ready_for_alignment"] is False
+    assert payload["ingestion"]["lanes"]["tumor"]["status"] == "empty"
+    assert payload["ingestion"]["lanes"]["normal"]["status"] == "empty"
+
+    sessions = await client.get(f"/api/workspaces/{workspace['id']}/ingestion/sessions")
+    assert sessions.status_code == 200
+    assert sessions.json() == []
+
+    deleted_keys = set(fake_storage.deleted_keys)
+    for file in normalized["files"]:
+        assert file["storage_key"] in deleted_keys
+    assert len(fake_storage.aborted_uploads) == len(pending_session["files"])
+
+
+@pytest.mark.anyio
+async def test_bam_lane_normalizes_to_paired_fastq(
+    client: httpx.AsyncClient,
+    fake_storage: FakeStorage,
+    queued_batches: list[tuple[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fake_run_samtools_fastq(
+        source_path: Path,
+        r1_path: Path,
+        r2_path: Path,
+        se_path: Path,
+        is_cram: bool,
+    ) -> None:
+        r1_path.write_text("@bam-r1\nACGT\n+\n!!!!\n", encoding="utf-8")
+        r2_path.write_text("@bam-r2\nTGCA\n+\n!!!!\n", encoding="utf-8")
+
+    monkeypatch.setattr(workspace_store, "run_samtools_fastq", fake_run_samtools_fastq)
+
+    workspace = await create_workspace(client)
+    session = await create_session(
+        client,
+        workspace["id"],
+        "tumor",
+        [("tumor.bam", b"bam-placeholder", "application/octet-stream", 101)],
+    )
+    await upload_parts_for_file(client, workspace["id"], session, "tumor.bam", b"bam-placeholder")
+    await commit_session(client, workspace["id"], session["id"])
+    queued_workspace_id, queued_batch_id = queued_batches.pop(0)
+
+    normalized = workspace_store.run_batch_normalization(
+        queued_workspace_id, queued_batch_id
+    ).model_dump()
+
+    tumor_lane = normalized["ingestion"]["lanes"]["tumor"]
+    assert tumor_lane["status"] == "ready"
+    assert tumor_lane["ready_for_alignment"] is True
+    assert normalized["ingestion"]["ready_for_alignment"] is False
+    assert {
+        file["read_pair"]
+        for file in normalized["files"]
+        if file["sample_lane"] == "tumor" and file["file_role"] == "canonical"
+    } == {"R1", "R2"}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("filename", "content_type", "is_cram"),
+    [
+        ("tumor.bam", "application/octet-stream", False),
+        ("tumor.cram", "application/octet-stream", True),
+    ],
+)
+async def test_alignment_container_single_end_output_fails_paired_requirement(
+    client: httpx.AsyncClient,
+    fake_storage: FakeStorage,
+    queued_batches: list[tuple[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    content_type: str,
+    is_cram: bool,
+):
+    expected_is_cram = is_cram
+
+    def fake_run_samtools_fastq(
+        source_path: Path,
+        r1_path: Path,
+        r2_path: Path,
+        se_path: Path,
+        is_cram: bool,
+    ) -> None:
+        assert is_cram is expected_is_cram
+        se_path.write_text("@single\nACGT\n+\n!!!!\n", encoding="utf-8")
+
+    monkeypatch.setattr(workspace_store, "run_samtools_fastq", fake_run_samtools_fastq)
+
+    workspace = await create_workspace(client)
+    session = await create_session(
+        client,
+        workspace["id"],
+        "tumor",
+        [(filename, b"alignment-placeholder", content_type, 102)],
+    )
+    await upload_parts_for_file(
+        client,
+        workspace["id"],
+        session,
+        filename,
+        b"alignment-placeholder",
+    )
+    await commit_session(client, workspace["id"], session["id"])
+    queued_workspace_id, queued_batch_id = queued_batches.pop(0)
+
+    with pytest.raises(RuntimeError, match="did not produce both R1 and R2"):
+        workspace_store.run_batch_normalization(queued_workspace_id, queued_batch_id)
+
+    current = await load_workspace(client, workspace["id"])
+    tumor_lane = current["ingestion"]["lanes"]["tumor"]
+    assert tumor_lane["status"] == "failed"
+    assert tumor_lane["ready_for_alignment"] is False
+    assert current["ingestion"]["ready_for_alignment"] is False
+    assert "did not produce both R1 and R2" in " ".join(tumor_lane["blocking_issues"])
+    assert tumor_lane["missing_pairs"] == ["R1", "R2"]
+
+
+@pytest.mark.anyio
+async def test_legacy_single_end_canonical_lane_serializes_as_failed(
+    client: httpx.AsyncClient,
+):
+    timestamp = workspace_store.utc_now()
+    workspace_id = str(uuid.uuid4())
+    batch_id = str(uuid.uuid4())
+
+    with session_scope() as session:
+        workspace = WorkspaceRecord(
+            id=workspace_id,
+            display_name="Legacy single-end",
+            species="human",
+            active_stage="ingestion",
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        batch = IngestionBatchRecord(
+            id=batch_id,
+            workspace_id=workspace_id,
+            sample_lane="tumor",
+            sample_stem="legacy",
+            status="ready",
+            error=None,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        canonical = WorkspaceFileRecord(
+            id=str(uuid.uuid4()),
+            workspace_id=workspace_id,
+            batch_id=batch_id,
+            source_file_id=None,
+            sample_lane="tumor",
+            filename="tumor_SE.normalized.fastq.gz",
+            format="fastq",
+            file_role="canonical",
+            status="ready",
+            read_pair="SE",
+            storage_key="workspaces/legacy/tumor_SE.normalized.fastq.gz",
+            size_bytes=12,
+            uploaded_at=timestamp,
+            error=None,
+        )
+        session.add(workspace)
+        session.add(batch)
+        session.add(canonical)
+
+    payload = await load_workspace(client, workspace_id)
+    tumor_lane = payload["ingestion"]["lanes"]["tumor"]
+    assert tumor_lane["status"] == "failed"
+    assert tumor_lane["ready_for_alignment"] is False
+    assert payload["ingestion"]["ready_for_alignment"] is False
+    assert tumor_lane["missing_pairs"] == ["R1", "R2"]
+    assert "did not produce both R1 and R2" in " ".join(tumor_lane["blocking_issues"])
 
 
 @pytest.mark.anyio

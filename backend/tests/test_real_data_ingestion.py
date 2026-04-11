@@ -10,6 +10,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SAMPLE_DIR = REPO_ROOT / "data" / "sample-data" / "seqc2-hcc1395-wes-ll" / "smoke"
+DEFAULT_ALIGNMENT_SAMPLE_DIR = REPO_ROOT / "data" / "sample-data" / "htslib-xx-pair" / "smoke"
 DEFAULT_API_BASE = "http://127.0.0.1:8000"
 POLL_INTERVAL_SECONDS = 0.5
 READY_TIMEOUT_SECONDS = 90
@@ -32,6 +33,28 @@ def sample_dir() -> Path:
             "Real-data sample files are missing. Expected them in "
             f"{candidate}. Missing: {', '.join(missing)}. "
             "Run `npm run sample-data:smoke` first or set REAL_DATA_SAMPLE_DIR."
+        )
+
+    return candidate
+
+
+def alignment_sample_dir() -> Path:
+    candidate = Path(
+        os.getenv("REAL_DATA_ALIGNMENT_SAMPLE_DIR", DEFAULT_ALIGNMENT_SAMPLE_DIR)
+    )
+    required_files = [
+        "tumor.bam",
+        "normal.cram",
+        "xx.fa",
+    ]
+
+    missing = [name for name in required_files if not (candidate / name).exists()]
+    if missing:
+        pytest.fail(
+            "Alignment-container sample files are missing. Expected them in "
+            f"{candidate}. Missing: {', '.join(missing)}. "
+            "Run `npm run sample-data:alignment` first or set "
+            "REAL_DATA_ALIGNMENT_SAMPLE_DIR."
         )
 
     return candidate
@@ -64,11 +87,16 @@ def wait_for_health(client: httpx.Client, timeout_seconds: int = 30) -> None:
 
 def file_payload(path: Path) -> dict[str, object]:
     stat = path.stat()
+    content_type = (
+        "application/gzip"
+        if path.name.endswith((".fastq.gz", ".fq.gz"))
+        else "application/octet-stream"
+    )
     return {
         "filename": path.name,
         "size_bytes": stat.st_size,
         "last_modified_ms": int(stat.st_mtime * 1000),
-        "content_type": "application/gzip",
+        "content_type": content_type,
     }
 
 
@@ -223,6 +251,67 @@ def test_real_data_ingestion_end_to_end() -> None:
 
         preview_response = client.get(
             f"/api/workspaces/{workspace['id']}/ingestion/preview/tumor"
+        )
+        assert preview_response.status_code == 200, preview_response.text
+        preview = preview_response.json()
+
+        assert preview["source"] == "canonical-fastq"
+        assert preview["stats"]["sampled_read_count"] > 0
+        assert preview["reads"]["R1"]
+        assert preview["reads"]["R2"]
+
+
+def test_real_data_alignment_container_ingestion_end_to_end() -> None:
+    sample_root = alignment_sample_dir()
+    tumor_files = [sample_root / "tumor.bam"]
+    normal_files = [sample_root / "normal.cram"]
+
+    with httpx.Client(base_url=api_base_url(), follow_redirects=True, timeout=60.0) as client:
+        wait_for_health(client)
+        workspace = create_workspace(client)
+
+        tumor_session = create_upload_session(
+            client,
+            workspace["id"],
+            "tumor",
+            tumor_files,
+        )
+        for path in tumor_files:
+            upload_session_file(client, workspace["id"], tumor_session, path)
+        tumor_commit = commit_upload_session(client, workspace["id"], tumor_session["id"])
+        assert tumor_commit["ingestion"]["ready_for_alignment"] is False
+
+        tumor_ready = wait_for_workspace(
+            client,
+            workspace["id"],
+            sample_lane="tumor",
+            status="ready",
+            ready_for_alignment=False,
+        )
+        assert tumor_ready["ingestion"]["lanes"]["tumor"]["ready_for_alignment"] is True
+
+        normal_session = create_upload_session(
+            client,
+            workspace["id"],
+            "normal",
+            normal_files,
+        )
+        for path in normal_files:
+            upload_session_file(client, workspace["id"], normal_session, path)
+        normal_commit = commit_upload_session(client, workspace["id"], normal_session["id"])
+        assert normal_commit["ingestion"]["ready_for_alignment"] is False
+
+        fully_ready = wait_for_workspace(
+            client,
+            workspace["id"],
+            sample_lane="normal",
+            status="ready",
+            ready_for_alignment=True,
+        )
+        assert fully_ready["ingestion"]["lanes"]["normal"]["ready_for_alignment"] is True
+
+        preview_response = client.get(
+            f"/api/workspaces/{workspace['id']}/ingestion/preview/normal"
         )
         assert preview_response.status_code == 200, preview_response.text
         preview = preview_response.json()

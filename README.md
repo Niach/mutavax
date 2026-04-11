@@ -78,6 +78,7 @@ Use `.env.example` as the template for common overrides such as:
 - `MINIO_DATA_DIR` for a host-mounted MinIO data directory
 - `LOCAL_SQLITE_PATH` for the local SQLite file when `DATABASE_URL` is unset
 - `REAL_DATA_SAMPLE_DIR` for pointing real-data tests at a local fixture directory
+- `REAL_DATA_ALIGNMENT_SAMPLE_DIR` for BAM/CRAM smoke fixtures
 
 ### Lint and tests
 
@@ -95,8 +96,8 @@ The repo now has three test tiers:
 - Real-data browser smoke: `npm run test:browser:real-data`
 
 The fast suite stays hermetic and is the default PR check. The real-data suites
-exercise the live ingestion slice with the public SEQC2 smoke FASTQs, real
-Postgres/MinIO services, background normalization, and one browser upload flow.
+exercise the live ingestion slice with public FASTQ and BAM/CRAM smoke data,
+real Postgres/MinIO services, background normalization, and one browser upload flow.
 
 ### Real-data prerequisites
 
@@ -104,6 +105,7 @@ Fetch the smoke FASTQs if you do not already have them:
 
 ```bash
 npm run sample-data:smoke
+npm run sample-data:alignment
 ```
 
 For backend real-data tests, start the backend against Postgres/MinIO and point
@@ -114,9 +116,17 @@ start both frontend and backend, then install Chromium once:
 npx playwright install chromium
 ```
 
+For CRAM smoke tests, start the backend with `SAMTOOLS_REFERENCE_FASTA`
+pointing at the downloaded `xx.fa`, for example:
+
+```bash
+SAMTOOLS_REFERENCE_FASTA=$PWD/data/sample-data/htslib-xx-pair/smoke/xx.fa
+```
+
 Optional overrides:
 
 - `REAL_DATA_SAMPLE_DIR` points tests at a different smoke fixture directory.
+- `REAL_DATA_ALIGNMENT_SAMPLE_DIR` points tests at a different BAM/CRAM smoke fixture directory.
 - `REAL_DATA_API_BASE` changes the backend base URL for the real-data pytest module.
 - `PLAYWRIGHT_BASE_URL` changes the frontend base URL for the browser smoke.
 
@@ -168,3 +178,19 @@ python3 scripts/fetch_seqc2_sample_data.py --help
 
 Each output directory also gets a `dataset-metadata.txt` manifest with the
 source runs, study accession, and source URLs.
+
+### Download BAM/CRAM smoke fixtures
+
+```bash
+npm run sample-data:alignment
+```
+
+This writes three files to `data/sample-data/htslib-xx-pair/smoke/`:
+
+- `tumor.bam`
+- `normal.cram`
+- `xx.fa`
+
+The materializer downloads HTSlib's tiny paired SAM sample and reference, then
+converts them into a BAM and a CRAM smoke fixture. It uses local `samtools`
+when available and falls back to the backend Docker image when it is not.

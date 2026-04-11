@@ -10,12 +10,26 @@ const sampleDir =
   process.env.REAL_DATA_SAMPLE_DIR
     ? path.resolve(process.env.REAL_DATA_SAMPLE_DIR)
     : path.join(repoRoot, "data", "sample-data", "seqc2-hcc1395-wes-ll", "smoke");
+const alignmentSampleDir =
+  process.env.REAL_DATA_ALIGNMENT_SAMPLE_DIR
+    ? path.resolve(process.env.REAL_DATA_ALIGNMENT_SAMPLE_DIR)
+    : path.join(repoRoot, "data", "sample-data", "htslib-xx-pair", "smoke");
 
 function samplePath(filename: string) {
   const filePath = path.join(sampleDir, filename);
   if (!fs.existsSync(filePath)) {
     throw new Error(
       `Missing real-data sample fixture: ${filePath}. Run npm run sample-data:smoke or set REAL_DATA_SAMPLE_DIR.`
+    );
+  }
+  return filePath;
+}
+
+function alignmentSamplePath(filename: string) {
+  const filePath = path.join(alignmentSampleDir, filename);
+  if (!fs.existsSync(filePath)) {
+    throw new Error(
+      `Missing alignment smoke fixture: ${filePath}. Run npm run sample-data:alignment or set REAL_DATA_ALIGNMENT_SAMPLE_DIR.`
     );
   }
   return filePath;
@@ -185,4 +199,119 @@ test("ingestion blocks single-end staging with paired-end requirement", async ({
     page.getByTestId("tumor-staging-start-upload")
   ).toBeDisabled();
   await expect(page.locator("body")).not.toContainText("needs attention");
+});
+
+test("header plus returns to the home workspace foyer", async ({ page, request }) => {
+  const stamp = Date.now();
+  const workspaceResponse = await request.post(`${apiBase}/api/workspaces/`, {
+    data: { display_name: `Plus nav ${stamp}`, species: "human" },
+  });
+  expect(workspaceResponse.ok()).toBeTruthy();
+  const workspace = await workspaceResponse.json();
+
+  await page.goto(`/workspaces/${workspace.id}/ingestion`);
+  await page.getByLabel("New workspace").click();
+
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByText("Workspaces")).toBeVisible();
+  await expect(page.getByText(`Plus nav ${stamp}`)).toBeVisible();
+});
+
+test("reset clears ingestion state", async ({ page }) => {
+  const stamp = Date.now();
+  const tumorR1 = tempFastqPath("tumor_R1.fastq", "@tumor-r1\nAAAA\n+\n!!!!\n");
+  const tumorR2 = tempFastqPath("tumor_R2.fastq", "@tumor-r2\nCCCC\n+\n!!!!\n");
+  const normalR1 = tempFastqPath("normal_R1.fastq", "@normal-r1\nGGGG\n+\n!!!!\n");
+  const normalR2 = tempFastqPath("normal_R2.fastq", "@normal-r2\nTTTT\n+\n!!!!\n");
+
+  await page.goto("/");
+  await page.getByTestId("workspace-name-input").fill(`Reset smoke ${stamp}`);
+
+  await Promise.all([
+    page.waitForURL(/\/workspaces\/[^/]+\/ingestion$/),
+    page.getByTestId("workspace-create-submit").click(),
+  ]);
+
+  await page
+    .getByTestId("tumor-lane-file-input")
+    .setInputFiles([tumorR1, tumorR2]);
+  await page.getByTestId("tumor-staging-start-upload").click();
+  await expect(page.getByTestId("tumor-lane-panel")).toHaveAttribute(
+    "data-summary-status",
+    "ready"
+  );
+
+  await page
+    .getByTestId("normal-lane-file-input")
+    .setInputFiles([normalR1, normalR2]);
+  await page.getByTestId("normal-staging-start-upload").click();
+  await expect(page.getByTestId("normal-lane-panel")).toHaveAttribute(
+    "data-summary-status",
+    "ready"
+  );
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Reset" }).click();
+
+  await expect(page.getByTestId("alignment-status-indicator")).toHaveAttribute(
+    "data-state",
+    "locked"
+  );
+  await expect(page.locator("body")).toContainText("0/4 outputs ready");
+  await expect(page.getByTestId("tumor-lane-panel")).toHaveAttribute(
+    "data-summary-status",
+    "empty"
+  );
+});
+
+test("ingestion smoke with BAM and CRAM alignment containers", async ({ page }) => {
+  const stamp = Date.now();
+
+  await page.goto("/");
+  await page.getByTestId("workspace-species-human").click();
+  await page.getByTestId("workspace-name-input").fill(`Alignment smoke ${stamp}`);
+
+  await Promise.all([
+    page.waitForURL(/\/workspaces\/[^/]+\/ingestion$/),
+    page.getByTestId("workspace-create-submit").click(),
+  ]);
+
+  await page
+    .getByTestId("tumor-lane-file-input")
+    .setInputFiles([alignmentSamplePath("tumor.bam")]);
+
+  await expect(page.getByTestId("tumor-staging-panel")).toHaveAttribute(
+    "data-validation-state",
+    "ready"
+  );
+  await page.getByTestId("tumor-staging-start-upload").click();
+
+  await expect(page.getByTestId("tumor-lane-panel")).toHaveAttribute(
+    "data-summary-status",
+    "ready"
+  );
+  await expect(page.getByTestId("alignment-status-indicator")).toHaveAttribute(
+    "data-state",
+    "locked"
+  );
+
+  await page
+    .getByTestId("normal-lane-file-input")
+    .setInputFiles([alignmentSamplePath("normal.cram")]);
+
+  await expect(page.getByTestId("normal-staging-panel")).toHaveAttribute(
+    "data-validation-state",
+    "ready"
+  );
+  await page.getByTestId("normal-staging-start-upload").click();
+
+  await expect(page.getByTestId("normal-lane-panel")).toHaveAttribute(
+    "data-summary-status",
+    "ready"
+  );
+  await expect(page.getByTestId("alignment-status-indicator")).toHaveAttribute(
+    "data-state",
+    "unlocked"
+  );
+  await expect(page.locator("body")).toContainText("4/4 outputs ready");
 });

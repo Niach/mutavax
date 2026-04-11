@@ -32,15 +32,14 @@ export function LaneReattachPanel({
     >
       <div className="flex items-baseline justify-between gap-3">
         <p className="text-sm font-medium text-slate-700">
-          Reattach files to resume
+          Resume upload
         </p>
         <p className="font-mono text-[10px] tracking-[0.22em] text-slate-400 uppercase tabular-nums">
           {session.files.length} file{session.files.length === 1 ? "" : "s"}
         </p>
       </div>
       <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">
-        Pick the same files from your machine — uploads pick up from the next
-        missing chunk. Nothing is re-sent.
+        Pick the same files. Missing chunks resume.
       </p>
 
       <ul className="mt-3 space-y-2">

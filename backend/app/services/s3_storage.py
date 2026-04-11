@@ -105,6 +105,9 @@ class S3Storage:
             UploadId=upload_id,
         )
 
+    def delete_object(self, key: str) -> None:
+        self.client.delete_object(Bucket=self.bucket, Key=key)
+
 
 _storage: Optional[S3Storage] = None
 

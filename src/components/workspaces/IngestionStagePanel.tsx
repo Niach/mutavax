@@ -17,8 +17,8 @@ import {
   getCompactIssueLabel,
   formatBytes,
   formatLaneLabel,
-  formatReadLayoutLabel,
   getLaneIssueLabel,
+  getLaneReadyCanonicalPairs,
 } from "@/lib/workspace-utils";
 import {
   InstrumentTraceRow,
@@ -261,8 +261,8 @@ function getLaneDisplayState({
   const totalBytes =
     laneState.session?.files.reduce((sum, file) => sum + file.sizeBytes, 0) ??
     getLaneSourceBytes(workspace, sampleLane);
+  const readyPairCount = getLaneReadyCanonicalPairs(workspace, sampleLane).length;
   const metadata = [
-    summary.readLayout ? formatReadLayoutLabel(summary.readLayout) : null,
     fileCount > 0 ? `${fileCount} file${fileCount === 1 ? "" : "s"}` : null,
     totalBytes > 0 ? formatBytes(totalBytes) : null,
   ];
@@ -299,7 +299,7 @@ function getLaneDisplayState({
   if (laneState.phase === "normalizing") {
     return {
       label: "Preparing",
-      summary: "Preparing canonical FASTQ",
+      summary: "Normalizing paired FASTQ",
       detail: null,
       tone: "active",
     };
@@ -309,6 +309,7 @@ function getLaneDisplayState({
     return {
       label: "Ready",
       summary: joinSummaryParts([
+        `${readyPairCount}/2 paired outputs ready`,
         ...metadata,
         ...getPreviewMetricTokens(previewState),
         previewState.phase === "loading" ? "Sampling QC" : null,
@@ -331,8 +332,10 @@ function getLaneDisplayState({
 
     return {
       label: primaryIssue,
-      summary:
-        joinSummaryParts(metadata) || "Upload new files to continue",
+      summary: joinSummaryParts([
+        `${readyPairCount}/2 paired outputs ready`,
+        ...metadata,
+      ]) || "Upload new files to continue",
       detail:
         detail && detail !== primaryIssue
           ? detail
@@ -345,7 +348,7 @@ function getLaneDisplayState({
 
   return {
     label: "Awaiting files",
-    summary: "FASTQ, BAM, or CRAM",
+    summary: "Paired FASTQ or BAM/CRAM",
     detail: null,
     tone: "idle",
   };
@@ -1378,7 +1381,7 @@ function LaneSection({
 
       {laneState.phase === "normalizing" ? (
         <div className="border-t border-black/8 px-4 py-3 text-sm text-slate-500 sm:px-6">
-          Preparing canonical FASTQ
+          Normalizing paired FASTQ
         </div>
       ) : null}
 
@@ -1433,17 +1436,17 @@ function IdleDropSurface({
           setDragActive(false);
           onFilesSelected(event.dataTransfer.files);
         }}
-        className={cn(
-          "flex items-center justify-between gap-3 rounded-2xl px-3 py-3 text-sm transition outline-none",
-          laneState.dragActive
-            ? "bg-slate-50 text-slate-900"
-            : "text-slate-600 hover:bg-slate-50/80 hover:text-slate-900",
+          className={cn(
+            "flex items-center justify-between gap-3 rounded-2xl px-3 py-3 text-sm transition outline-none",
+            laneState.dragActive
+              ? "bg-slate-50 text-slate-900"
+              : "text-slate-600 hover:bg-slate-50/80 hover:text-slate-900",
           "focus-visible:bg-slate-50 focus-visible:text-slate-900"
         )}
-      >
+        >
         <div className="flex items-center gap-3">
           <Upload className="size-4 shrink-0 text-slate-400" strokeWidth={1.5} />
-          <span>FASTQ, BAM, or CRAM</span>
+          <span>Paired FASTQ or BAM/CRAM</span>
         </div>
         <span className="font-mono text-[10px] tracking-[0.18em] text-slate-400 uppercase">
           Drop or browse
