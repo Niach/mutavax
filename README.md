@@ -68,9 +68,103 @@ docker compose up --build
 
 Runs frontend at `localhost:3000`, backend at `localhost:8000`, MinIO console at `localhost:9001`.
 
+### Environment overrides
+
+Repo-tracked files should stay free of machine-specific absolute paths. Put any
+local overrides in an ignored `.env` file instead.
+
+Use `.env.example` as the template for common overrides such as:
+
+- `MINIO_DATA_DIR` for a host-mounted MinIO data directory
+- `LOCAL_SQLITE_PATH` for the local SQLite file when `DATABASE_URL` is unset
+- `REAL_DATA_SAMPLE_DIR` for pointing real-data tests at a local fixture directory
+
 ### Lint and tests
 
 ```bash
 npm run lint
 ./backend/venv/bin/pytest backend/tests
 ```
+
+## Automated testing
+
+The repo now has three test tiers:
+
+- Fast backend guardrail: `npm run test:backend:fast`
+- Real-data backend integration: `npm run test:backend:real-data`
+- Real-data browser smoke: `npm run test:browser:real-data`
+
+The fast suite stays hermetic and is the default PR check. The real-data suites
+exercise the live ingestion slice with the public SEQC2 smoke FASTQs, real
+Postgres/MinIO services, background normalization, and one browser upload flow.
+
+### Real-data prerequisites
+
+Fetch the smoke FASTQs if you do not already have them:
+
+```bash
+npm run sample-data:smoke
+```
+
+For backend real-data tests, start the backend against Postgres/MinIO and point
+the test at it with `REAL_DATA_API_BASE` if needed. For browser smoke tests,
+start both frontend and backend, then install Chromium once:
+
+```bash
+npx playwright install chromium
+```
+
+Optional overrides:
+
+- `REAL_DATA_SAMPLE_DIR` points tests at a different smoke fixture directory.
+- `REAL_DATA_API_BASE` changes the backend base URL for the real-data pytest module.
+- `PLAYWRIGHT_BASE_URL` changes the frontend base URL for the browser smoke.
+
+## Sample data
+
+For ingestion smoke tests, this repo now includes a helper for the public SEQC2
+matched human tumor/normal exome pair:
+
+- Tumor: `SRR7890850` (`WES_LL_T_1`, HCC1395)
+- Normal: `SRR7890851` (`WES_LL_N_1`, HCC1395BL)
+- Study: `SRP162370`
+
+The downloader renames ENA's `_1` / `_2` files into cancerstudio-friendly
+`R1` / `R2` names, because the app currently validates FASTQ filenames using
+`R1` / `R2`.
+
+### Download a small smoke-test subset
+
+```bash
+npm run sample-data:smoke
+```
+
+This writes four small FASTQs to
+`data/sample-data/seqc2-hcc1395-wes-ll/smoke/`:
+
+- `tumor_R1.fastq.gz`
+- `tumor_R2.fastq.gz`
+- `normal_R1.fastq.gz`
+- `normal_R2.fastq.gz`
+
+By default the smoke subset keeps `50,000` reads per FASTQ file, which is
+`200,000` FASTQ lines.
+
+### Download the full renamed pair
+
+```bash
+npm run sample-data:full
+```
+
+The full download lands in `data/sample-data/seqc2-hcc1395-wes-ll/full/`.
+
+### Custom options
+
+```bash
+python3 scripts/fetch_seqc2_sample_data.py --mode smoke --reads 10000
+python3 scripts/fetch_seqc2_sample_data.py --mode smoke --output-dir /tmp/cancerstudio-smoke
+python3 scripts/fetch_seqc2_sample_data.py --help
+```
+
+Each output directory also gets a `dataset-metadata.txt` manifest with the
+source runs, study accession, and source URLs.

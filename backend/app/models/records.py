@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -76,7 +76,7 @@ class WorkspaceFileRecord(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     read_pair: Mapped[str] = mapped_column(String(32), nullable=False)
     storage_key: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
-    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -124,10 +124,10 @@ class UploadSessionFileRecord(Base):
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     format: Mapped[str] = mapped_column(String(32), nullable=False)
     read_pair: Mapped[str] = mapped_column(String(32), nullable=False)
-    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
-    uploaded_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    uploaded_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     total_parts: Mapped[int] = mapped_column(Integer, nullable=False)
-    last_modified_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_modified_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
     fingerprint: Mapped[str] = mapped_column(String(1024), nullable=False, index=True)
     content_type: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     storage_key: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
@@ -156,7 +156,7 @@ class UploadSessionPartRecord(Base):
     )
     part_number: Mapped[int] = mapped_column(Integer, nullable=False)
     etag: Mapped[str] = mapped_column(String(255), nullable=False)
-    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     session_file: Mapped["UploadSessionFileRecord"] = relationship(back_populates="parts")

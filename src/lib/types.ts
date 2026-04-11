@@ -37,7 +37,8 @@ export type UploadSessionFileStatus =
   | "uploading"
   | "uploaded"
   | "failed";
-export type ReadPair = "R1" | "R2" | "unknown";
+export type ReadPair = "R1" | "R2" | "SE" | "unknown";
+export type ReadLayout = "paired" | "single";
 export type StageImplementationState = "live" | "mock" | "planned";
 
 export interface PipelineStage {
@@ -86,6 +87,7 @@ export interface IngestionLaneSummary {
   canonicalFileCount: number;
   missingPairs: ReadPair[];
   blockingIssues: string[];
+  readLayout?: ReadLayout | null;
   updatedAt?: string | null;
 }
 
@@ -155,6 +157,31 @@ export interface Workspace {
   files: WorkspaceFile[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface FastqReadPreview {
+  header: string;
+  sequence: string;
+  quality: string;
+  length: number;
+  gcPercent: number;
+  meanQuality: number;
+}
+
+export interface SampledReadStats {
+  sampledReadCount: number;
+  averageReadLength: number;
+  sampledGcPercent: number;
+}
+
+export interface IngestionLanePreview {
+  workspaceId: string;
+  sampleLane: SampleLane;
+  batchId: string;
+  source: "canonical-fastq";
+  readLayout: ReadLayout;
+  reads: Partial<Record<Extract<ReadPair, "R1" | "R2" | "SE">, FastqReadPreview[]>>;
+  stats: SampledReadStats;
 }
 
 export interface DLAAllele {

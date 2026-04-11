@@ -1,9 +1,11 @@
+from contextlib import contextmanager
 import os
 from pathlib import Path
-from typing import BinaryIO, Optional
+from typing import BinaryIO, Iterator, Optional
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 
 class S3Storage:
@@ -47,6 +49,22 @@ class S3Storage:
     def download_path(self, key: str, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.client.download_file(self.bucket, key, str(destination))
+
+    @contextmanager
+    def open_read_stream(self, key: str) -> Iterator[BinaryIO]:
+        try:
+            response = self.client.get_object(Bucket=self.bucket, Key=key)
+        except ClientError as error:
+            error_code = error.response.get("Error", {}).get("Code")
+            if error_code in {"404", "NoSuchKey"}:
+                raise FileNotFoundError(f"Stored object {key} was not found") from error
+            raise
+
+        body = response["Body"]
+        try:
+            yield body
+        finally:
+            body.close()
 
     def create_multipart_upload(self, key: str, content_type: Optional[str] = None) -> str:
         extra_args = {"ContentType": content_type} if content_type else {}

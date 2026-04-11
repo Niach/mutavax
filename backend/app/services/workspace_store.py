@@ -1,4 +1,5 @@
 import gzip
+import io
 import math
 import os
 import re
@@ -26,11 +27,15 @@ from app.models.records import (
 )
 from app.models.schemas import (
     ActiveStageUpdateRequest,
+    FastqReadPreview,
     IngestionLaneSummaryResponse,
+    IngestionLanePreviewResponse,
     IngestionStatus,
     IngestionSummaryResponse,
     PipelineStageId,
+    ReadLayout,
     ReadPair,
+    SampledReadStats,
     SampleLane,
     UploadSessionCreateRequest,
     UploadSessionFileResponse,
@@ -47,7 +52,12 @@ from app.models.schemas import (
 )
 from app.services.s3_storage import get_storage
 
-READ_PAIR_PATTERN = re.compile(r"(?:^|[_\-.])(R[12])(?:[_\-.]|$)", re.IGNORECASE)
+READ_PAIR_PATTERN = re.compile(
+    r"(?:^|[_\-.])(R[12])(?:[_\-.]|$)"
+    r"|(?<=[_\-.])([12])(?=\.(?:fastq|fq)(?:\.gz)?$)",
+    re.IGNORECASE,
+)
+UNDERSCORE_PAIR_SUFFIX_PATTERN = re.compile(r"[_\-.][12]$")
 SEPARATOR_PATTERN = re.compile(r"[_\-.]+")
 LANE_SPLIT_TOKEN_PATTERN = re.compile(r"^(?:L\d{3}|\d{3})$", re.IGNORECASE)
 COMPRESSED_FASTQ_SUFFIXES = (".fastq.gz", ".fq.gz")
@@ -55,6 +65,7 @@ FASTQ_SUFFIXES = COMPRESSED_FASTQ_SUFFIXES + (".fastq", ".fq")
 BAM_SUFFIXES = (".bam",)
 CRAM_SUFFIXES = (".cram",)
 CHUNK_SIZE_BYTES = 16 * 1024 * 1024
+PREVIEW_READ_LIMIT = 8
 LANES = (SampleLane.TUMOR, SampleLane.NORMAL)
 
 
@@ -64,6 +75,11 @@ class LaneValidationResult:
     sample_stem: Optional[str]
     missing_pairs: list[ReadPair]
     blocking_issues: list[str]
+    read_layout: Optional[ReadLayout] = None
+
+
+class LanePreviewUnavailableError(RuntimeError):
+    pass
 
 
 def utc_now() -> datetime:
@@ -98,7 +114,8 @@ def infer_read_pair(filename: str) -> ReadPair:
     match = READ_PAIR_PATTERN.search(filename)
     if not match:
         return ReadPair.UNKNOWN
-    return ReadPair.R1 if match.group(1).upper() == "R1" else ReadPair.R2
+    token = match.group(1) or match.group(2) or ""
+    return ReadPair.R1 if token.upper().endswith("1") else ReadPair.R2
 
 
 def is_compressed_fastq(filename: str) -> bool:
@@ -115,6 +132,7 @@ def strip_known_suffix(filename: str) -> str:
 
 def normalize_fastq_sample_stem(filename: str) -> str:
     stem = strip_known_suffix(filename)
+    stem = UNDERSCORE_PAIR_SUFFIX_PATTERN.sub("", stem)
     tokens = [token for token in SEPARATOR_PATTERN.split(stem) if token]
     filtered_tokens = [
         token
@@ -312,6 +330,7 @@ def validate_lane_files(files: Iterable[UploadSessionFileRecord | WorkspaceFileR
             sample_stem=None,
             missing_pairs=[],
             blocking_issues=["Upload at least one sequencing file for this lane."],
+            read_layout=None,
         )
 
     formats = {WorkspaceFileFormat(file.format) for file in file_list}
@@ -323,6 +342,7 @@ def validate_lane_files(files: Iterable[UploadSessionFileRecord | WorkspaceFileR
             blocking_issues=[
                 "Each lane must contain one format family only: FASTQ or a single BAM/CRAM file.",
             ],
+            read_layout=None,
         )
 
     file_format = next(iter(formats))
@@ -333,56 +353,67 @@ def validate_lane_files(files: Iterable[UploadSessionFileRecord | WorkspaceFileR
                 sample_stem=None,
                 missing_pairs=[],
                 blocking_issues=["Upload exactly one BAM or CRAM file for a lane."],
+                read_layout=None,
             )
         return LaneValidationResult(
             file_format=file_format,
             sample_stem=strip_known_suffix(file_list[0].filename).lower(),
             missing_pairs=[],
             blocking_issues=[],
+            read_layout=None,
         )
+
+    # FASTQ: decide layout from read-pair markers
+    r1_files = [f for f in file_list if ReadPair(f.read_pair) == ReadPair.R1]
+    r2_files = [f for f in file_list if ReadPair(f.read_pair) == ReadPair.R2]
+    unknown_files = [f for f in file_list if ReadPair(f.read_pair) == ReadPair.UNKNOWN]
+
+    has_r1 = bool(r1_files)
+    has_r2 = bool(r2_files)
+    has_unknown = bool(unknown_files)
 
     blocking_issues: list[str] = []
-    unknown_pair_files = [
-        file.filename
-        for file in file_list
-        if ReadPair(file.read_pair) == ReadPair.UNKNOWN
-    ]
-    if unknown_pair_files:
+    read_layout: Optional[ReadLayout] = None
+
+    if has_r1 and has_r2 and not has_unknown:
+        read_layout = ReadLayout.PAIRED
+    elif has_r1 and not has_r2 and not has_unknown:
         blocking_issues.append(
-            "FASTQ filenames must include R1 or R2: "
-            + ", ".join(sorted(unknown_pair_files)[:3])
+            "Paired-end required. Add the matching R2 file before continuing."
+        )
+    elif has_unknown and not has_r1 and not has_r2:
+        blocking_issues.append(
+            "Paired-end required. Filenames don't encode R1/R2 — rename with "
+            "_R1_/_R2_ markers."
+        )
+    elif has_r2 and not has_r1:
+        blocking_issues.append(
+            "R2 files need matching R1 files. Add the R1 file or drop the R2 files."
+        )
+    elif has_unknown and (has_r1 or has_r2):
+        unnamed_preview = ", ".join(sorted(f.filename for f in unknown_files)[:3])
+        blocking_issues.append(
+            "Cannot mix R1/R2-marked files with files that don't encode a read pair: "
+            f"{unnamed_preview}. Use consistent naming across the lane."
+        )
+    else:
+        blocking_issues.append(
+            "Paired-end required. Could not determine R1/R2 from the uploaded files."
         )
 
-    stems = {
-        normalize_fastq_sample_stem(file.filename)
-        for file in file_list
-        if ReadPair(file.read_pair) != ReadPair.UNKNOWN
-    }
-    if len(stems) != 1:
+    stems = {normalize_fastq_sample_stem(file.filename) for file in file_list}
+    stems.discard("")
+    if len(stems) > 1:
         blocking_issues.append(
             "FASTQ files in a lane must resolve to exactly one sample family."
-        )
-
-    present_pairs = {
-        ReadPair(file.read_pair)
-        for file in file_list
-        if ReadPair(file.read_pair) in {ReadPair.R1, ReadPair.R2}
-    }
-    missing_pairs: list[ReadPair] = []
-    if ReadPair.R1 not in present_pairs:
-        missing_pairs.append(ReadPair.R1)
-    if ReadPair.R2 not in present_pairs:
-        missing_pairs.append(ReadPair.R2)
-    if missing_pairs:
-        blocking_issues.append(
-            "FASTQ lanes need at least one R1 and one R2 file."
         )
 
     return LaneValidationResult(
         file_format=file_format,
         sample_stem=next(iter(stems), None),
-        missing_pairs=missing_pairs,
+        missing_pairs=[],
         blocking_issues=blocking_issues,
+        read_layout=read_layout,
     )
 
 
@@ -411,6 +442,7 @@ def summarize_session_lane(
         canonical_file_count=0,
         missing_pairs=validation.missing_pairs,
         blocking_issues=blocking_issues,
+        read_layout=validation.read_layout,
         updated_at=isoformat(upload_session.updated_at),
     )
 
@@ -431,11 +463,22 @@ def summarize_batch(batch: Optional[IngestionBatchRecord], sample_lane: SampleLa
         and file.status == WorkspaceFileStatus.READY.value
     ]
     ready_pairs = {ReadPair(file.read_pair) for file in canonical_files}
+
+    read_layout: Optional[ReadLayout] = None
+    if ReadPair.SE in ready_pairs:
+        read_layout = ReadLayout.SINGLE
+    elif ReadPair.R1 in ready_pairs or ReadPair.R2 in ready_pairs:
+        read_layout = ReadLayout.PAIRED
+    else:
+        source_validation = validate_lane_files(source_files)
+        read_layout = source_validation.read_layout
+
     missing_pairs: list[ReadPair] = []
-    if ReadPair.R1 not in ready_pairs:
-        missing_pairs.append(ReadPair.R1)
-    if ReadPair.R2 not in ready_pairs:
-        missing_pairs.append(ReadPair.R2)
+    if read_layout == ReadLayout.PAIRED and canonical_files:
+        if ReadPair.R1 not in ready_pairs:
+            missing_pairs.append(ReadPair.R1)
+        if ReadPair.R2 not in ready_pairs:
+            missing_pairs.append(ReadPair.R2)
 
     blocking_issues = issues_from_error_text(batch.error)
     blocking_issues.extend(
@@ -456,6 +499,7 @@ def summarize_batch(batch: Optional[IngestionBatchRecord], sample_lane: SampleLa
         canonical_file_count=len(canonical_files),
         missing_pairs=missing_pairs,
         blocking_issues=blocking_issues,
+        read_layout=read_layout,
         updated_at=isoformat(batch.updated_at),
     )
 
@@ -499,6 +543,159 @@ def summarize_workspace_ingestion(workspace: WorkspaceRecord) -> IngestionSummar
         ready_for_alignment=ready_for_alignment,
         lanes=lane_summaries,
     )
+
+
+def ready_canonical_files_for_batch(
+    batch: IngestionBatchRecord,
+) -> dict[ReadPair, WorkspaceFileRecord]:
+    return {
+        ReadPair(file.read_pair): file
+        for file in batch.files
+        if file.file_role == WorkspaceFileRole.CANONICAL.value
+        and file.status == WorkspaceFileStatus.READY.value
+        and ReadPair(file.read_pair) in {ReadPair.R1, ReadPair.R2, ReadPair.SE}
+    }
+
+
+def build_fastq_read_preview(header: str, sequence: str, quality: str) -> FastqReadPreview:
+    gc_count = sum(1 for base in sequence.upper() if base in {"G", "C"})
+    length = len(sequence)
+    gc_percent = round((gc_count / length) * 100, 2) if length else 0.0
+    mean_quality = (
+        round(sum(max(ord(char) - 33, 0) for char in quality) / len(quality), 2)
+        if quality
+        else 0.0
+    )
+
+    return FastqReadPreview(
+        header=header,
+        sequence=sequence,
+        quality=quality,
+        length=length,
+        gc_percent=gc_percent,
+        mean_quality=mean_quality,
+    )
+
+
+def sample_canonical_fastq_reads(source_file: WorkspaceFileRecord) -> list[FastqReadPreview]:
+    try:
+        with get_storage().open_read_stream(source_file.storage_key) as stream:
+            with gzip.GzipFile(fileobj=stream, mode="rb") as gzip_stream:
+                with io.TextIOWrapper(gzip_stream, encoding="utf-8") as text_stream:
+                    reads: list[FastqReadPreview] = []
+                    for _ in range(PREVIEW_READ_LIMIT):
+                        header = text_stream.readline()
+                        if not header:
+                            break
+
+                        sequence = text_stream.readline()
+                        separator = text_stream.readline()
+                        quality = text_stream.readline()
+                        if not sequence or not separator or not quality:
+                            raise ValueError(
+                                f"Malformed canonical FASTQ preview for {source_file.filename}: incomplete record."
+                            )
+
+                        header = header.rstrip("\r\n")
+                        sequence = sequence.rstrip("\r\n")
+                        separator = separator.rstrip("\r\n")
+                        quality = quality.rstrip("\r\n")
+
+                        if not header.startswith("@"):
+                            raise ValueError(
+                                f"Malformed canonical FASTQ preview for {source_file.filename}: invalid header."
+                            )
+                        if not separator.startswith("+"):
+                            raise ValueError(
+                                f"Malformed canonical FASTQ preview for {source_file.filename}: missing separator."
+                            )
+                        if len(sequence) != len(quality):
+                            raise ValueError(
+                                f"Malformed canonical FASTQ preview for {source_file.filename}: sequence and quality lengths differ."
+                            )
+
+                        reads.append(build_fastq_read_preview(header, sequence, quality))
+
+                    return reads
+    except FileNotFoundError:
+        raise
+    except UnicodeDecodeError as error:
+        raise ValueError(
+            f"Unable to decode canonical FASTQ preview for {source_file.filename}: {error}"
+        ) from error
+    except OSError as error:
+        raise ValueError(
+            f"Unable to read canonical FASTQ preview for {source_file.filename}: {error}"
+        ) from error
+
+
+def calculate_sampled_read_stats(
+    reads_by_pair: dict[ReadPair, list[FastqReadPreview]],
+) -> SampledReadStats:
+    all_reads = [
+        read
+        for read_pair in (ReadPair.R1, ReadPair.R2, ReadPair.SE)
+        for read in reads_by_pair.get(read_pair, [])
+    ]
+    if not all_reads:
+        return SampledReadStats(
+            sampled_read_count=0,
+            average_read_length=0.0,
+            sampled_gc_percent=0.0,
+        )
+
+    total_bases = sum(read.length for read in all_reads)
+    total_gc_bases = sum((read.gc_percent / 100) * read.length for read in all_reads)
+
+    return SampledReadStats(
+        sampled_read_count=len(all_reads),
+        average_read_length=round(total_bases / len(all_reads), 2),
+        sampled_gc_percent=round((total_gc_bases / total_bases) * 100, 2)
+        if total_bases
+        else 0.0,
+    )
+
+
+def load_ingestion_lane_preview(
+    workspace_id: str,
+    sample_lane: SampleLane,
+) -> IngestionLanePreviewResponse:
+    with session_scope() as session:
+        workspace = get_workspace_record(session, workspace_id)
+        lane_summary = summarize_workspace_ingestion(workspace).lanes[sample_lane]
+        if lane_summary.status != IngestionStatus.READY or not lane_summary.active_batch_id:
+            raise LanePreviewUnavailableError(
+                "Sequence preview becomes available after canonical FASTQ is ready."
+            )
+
+        batch = get_batch_record(session, workspace_id, lane_summary.active_batch_id)
+        canonical_files = ready_canonical_files_for_batch(batch)
+
+        if ReadPair.SE in canonical_files:
+            read_layout = ReadLayout.SINGLE
+            reads = {
+                ReadPair.SE: sample_canonical_fastq_reads(canonical_files[ReadPair.SE]),
+            }
+        elif ReadPair.R1 in canonical_files and ReadPair.R2 in canonical_files:
+            read_layout = ReadLayout.PAIRED
+            reads = {
+                ReadPair.R1: sample_canonical_fastq_reads(canonical_files[ReadPair.R1]),
+                ReadPair.R2: sample_canonical_fastq_reads(canonical_files[ReadPair.R2]),
+            }
+        else:
+            raise FileNotFoundError(
+                "Canonical FASTQ preview requires ready canonical files for "
+                f"{sample_lane.value} lane."
+            )
+
+        return IngestionLanePreviewResponse(
+            workspace_id=workspace.id,
+            sample_lane=sample_lane,
+            batch_id=batch.id,
+            read_layout=read_layout,
+            reads=reads,
+            stats=calculate_sampled_read_stats(reads),
+        )
 
 
 def serialize_workspace(workspace: WorkspaceRecord) -> WorkspaceResponse:
@@ -843,7 +1040,9 @@ def batch_status_from_files(batch: IngestionBatchRecord) -> IngestionStatus:
         for file in canonical_files
         if file.status == WorkspaceFileStatus.READY.value
     }
-    if ready_pairs == {ReadPair.R1, ReadPair.R2}:
+    if ready_pairs >= {ReadPair.R1, ReadPair.R2}:
+        return IngestionStatus.READY
+    if ReadPair.SE in ready_pairs:
         return IngestionStatus.READY
     if any(file.status == WorkspaceFileStatus.NORMALIZING.value for file in source_files):
         return IngestionStatus.NORMALIZING
@@ -958,7 +1157,44 @@ def commit_upload_session(workspace_id: str, session_id: str) -> WorkspaceRespon
     return response
 
 
-def run_samtools_fastq(source_path: Path, r1_path: Path, r2_path: Path, is_cram: bool) -> None:
+def delete_upload_session(workspace_id: str, session_id: str) -> WorkspaceResponse:
+    storage = get_storage()
+    aborts: list[tuple[str, str]] = []
+
+    with session_scope() as session:
+        upload_session = get_upload_session_record(session, workspace_id, session_id)
+        if upload_session.status != UploadSessionStatus.COMMITTED.value:
+            for upload_file in upload_session.files:
+                if upload_file.multipart_upload_id and upload_file.storage_key:
+                    aborts.append(
+                        (upload_file.storage_key, upload_file.multipart_upload_id)
+                    )
+
+        workspace = upload_session.workspace
+        session.delete(upload_session)
+        workspace.updated_at = utc_now()
+        session.add(workspace)
+        session.flush()
+        response = serialize_workspace(workspace)
+
+    for storage_key, upload_id in aborts:
+        try:
+            storage.abort_multipart_upload(storage_key, upload_id)
+        except Exception:
+            # Best-effort cleanup — the session record is already gone, so a
+            # leftover MinIO multipart will be reaped by lifecycle policy.
+            pass
+
+    return response
+
+
+def run_samtools_fastq(
+    source_path: Path,
+    r1_path: Path,
+    r2_path: Path,
+    se_path: Path,
+    is_cram: bool,
+) -> None:
     command = [
         "samtools",
         "fastq",
@@ -967,7 +1203,7 @@ def run_samtools_fastq(source_path: Path, r1_path: Path, r2_path: Path, is_cram:
         "-2",
         str(r2_path),
         "-0",
-        "/dev/null",
+        str(se_path),
         "-s",
         "/dev/null",
         "-n",
@@ -988,20 +1224,28 @@ def merge_fastq_lane(
     batch: IngestionBatchRecord,
     source_files: list[WorkspaceFileRecord],
     temp_dir: Path,
+    read_layout: ReadLayout,
 ) -> None:
     storage = get_storage()
-    grouped_files = {
-        ReadPair.R1: sorted(
-            [file for file in source_files if ReadPair(file.read_pair) == ReadPair.R1],
-            key=lambda item: item.filename.lower(),
-        ),
-        ReadPair.R2: sorted(
-            [file for file in source_files if ReadPair(file.read_pair) == ReadPair.R2],
-            key=lambda item: item.filename.lower(),
-        ),
-    }
+    if read_layout == ReadLayout.SINGLE:
+        grouped_files: dict[ReadPair, list[WorkspaceFileRecord]] = {
+            ReadPair.SE: sorted(source_files, key=lambda item: item.filename.lower()),
+        }
+    else:
+        grouped_files = {
+            ReadPair.R1: sorted(
+                [file for file in source_files if ReadPair(file.read_pair) == ReadPair.R1],
+                key=lambda item: item.filename.lower(),
+            ),
+            ReadPair.R2: sorted(
+                [file for file in source_files if ReadPair(file.read_pair) == ReadPair.R2],
+                key=lambda item: item.filename.lower(),
+            ),
+        }
 
     for read_pair, read_pair_files in grouped_files.items():
+        if not read_pair_files:
+            continue
         canonical_filename = build_canonical_filename(SampleLane(batch.sample_lane), read_pair)
         canonical_path = temp_dir / canonical_filename
         with gzip.open(canonical_path, "wb") as destination_handle:
@@ -1018,7 +1262,7 @@ def merge_fastq_lane(
             session,
             workspace=workspace,
             batch=batch,
-            source_file_id=read_pair_files[0].id if read_pair_files else None,
+            source_file_id=read_pair_files[0].id,
             filename=canonical_filename,
             read_pair=read_pair,
             size_bytes=canonical_path.stat().st_size,
@@ -1045,20 +1289,37 @@ def normalize_alignment_container(
 
     r1_fastq_path = temp_dir / f"{source_file.id}-R1.fastq"
     r2_fastq_path = temp_dir / f"{source_file.id}-R2.fastq"
+    se_fastq_path = temp_dir / f"{source_file.id}-SE.fastq"
     run_samtools_fastq(
         source_path,
         r1_fastq_path,
         r2_fastq_path,
+        se_fastq_path,
         is_cram=source_file.format == WorkspaceFileFormat.CRAM.value,
     )
 
-    if not r1_fastq_path.exists() or not r2_fastq_path.exists():
-        raise RuntimeError(f"samtools did not produce paired FASTQ files for {source_file.filename}")
+    def non_empty(path: Path) -> bool:
+        return path.exists() and path.stat().st_size > 0
 
-    for read_pair, plain_path in [
-        (ReadPair.R1, r1_fastq_path),
-        (ReadPair.R2, r2_fastq_path),
-    ]:
+    r1_ok = non_empty(r1_fastq_path)
+    r2_ok = non_empty(r2_fastq_path)
+    se_ok = non_empty(se_fastq_path)
+
+    if r1_ok and r2_ok:
+        outputs: list[tuple[ReadPair, Path]] = [
+            (ReadPair.R1, r1_fastq_path),
+            (ReadPair.R2, r2_fastq_path),
+        ]
+    elif se_ok and not r1_ok and not r2_ok:
+        outputs = [(ReadPair.SE, se_fastq_path)]
+    elif r1_ok and not r2_ok and not se_ok:
+        outputs = [(ReadPair.SE, r1_fastq_path)]
+    else:
+        raise RuntimeError(
+            f"samtools did not produce usable FASTQ output for {source_file.filename}"
+        )
+
+    for read_pair, plain_path in outputs:
         canonical_filename = build_canonical_filename(SampleLane(batch.sample_lane), read_pair)
         canonical_path = temp_dir / canonical_filename
         with plain_path.open("rb") as source_handle, gzip.open(canonical_path, "wb") as destination_handle:
@@ -1109,6 +1370,7 @@ def run_batch_normalization(workspace_id: str, batch_id: str) -> WorkspaceRespon
                         batch=batch,
                         source_files=source_files,
                         temp_dir=temp_dir,
+                        read_layout=validation.read_layout or ReadLayout.PAIRED,
                     )
                 elif validation.file_format in {WorkspaceFileFormat.BAM, WorkspaceFileFormat.CRAM}:
                     normalize_alignment_container(

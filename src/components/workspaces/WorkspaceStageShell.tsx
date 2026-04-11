@@ -13,7 +13,11 @@ import type { PipelineStageId, Workspace } from "@/lib/types";
 import { PIPELINE_STAGES } from "@/lib/types";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { formatSpeciesLabel } from "@/lib/workspace-utils";
+import {
+  formatLaneLabel,
+  formatSpeciesLabel,
+  getLaneStatusLabel,
+} from "@/lib/workspace-utils";
 
 function mergeWorkspaces(workspaces: Workspace[], workspace: Workspace) {
   const withoutCurrent = workspaces.filter((item) => item.id !== workspace.id);
@@ -131,8 +135,8 @@ export default function WorkspaceStageShell({
 
       <div className="mx-auto max-w-[1440px] px-4 py-6 lg:px-6">
         <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
-          <nav className="rounded-[28px] border border-black/6 bg-white/80 p-3 shadow-sm shadow-black/5 backdrop-blur">
-            <div className="mb-3 px-2 text-[11px] font-semibold tracking-[0.24em] text-slate-500 uppercase">
+          <nav className="rounded-[24px] border border-black/5 bg-white/65 p-3 shadow-sm shadow-black/5 backdrop-blur">
+            <div className="mb-3 px-2 font-mono text-[10px] font-medium tracking-[0.28em] text-slate-400 uppercase">
               Pipeline
             </div>
             <div className="space-y-1">
@@ -201,24 +205,95 @@ export default function WorkspaceStageShell({
           </nav>
 
           <main className="space-y-4">
-            <div className="rounded-[28px] border border-black/6 bg-white/80 px-6 py-5 shadow-sm shadow-black/5 backdrop-blur">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-2xl font-semibold tracking-tight">
+            {currentStageId === "ingestion" ? (
+              <div className="border-b border-black/8 pb-4">
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                  <h2 className="text-3xl font-semibold tracking-tight">
                     {currentStage.name}
                   </h2>
-                  <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                    {currentStage.description}
-                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      data-testid="alignment-status-indicator"
+                      data-state={alignmentLocked ? "locked" : "unlocked"}
+                      className={cn(
+                        "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 font-mono text-[10px] tracking-[0.2em] uppercase",
+                        alignmentLocked
+                          ? "border-black/10 bg-white/80 text-slate-500"
+                          : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      )}
+                    >
+                      <span
+                        aria-hidden
+                        className={cn(
+                          "size-1.5 rounded-full",
+                          alignmentLocked ? "bg-slate-300" : "bg-emerald-500"
+                        )}
+                      />
+                      {alignmentLocked ? "Alignment locked" : "Alignment ready"}
+                    </span>
+
+                    {(["tumor", "normal"] as const).map((lane) => {
+                      const summary = workspace.ingestion.lanes[lane];
+                      const isReady = summary.status === "ready";
+                      const isFailed = summary.status === "failed";
+
+                      return (
+                        <span
+                          key={lane}
+                          className={cn(
+                            "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm",
+                            isReady
+                              ? "border-emerald-200 bg-emerald-50/80 text-emerald-800"
+                              : isFailed
+                                ? "border-rose-200 bg-rose-50 text-rose-700"
+                                : "border-black/10 bg-white/80 text-slate-600"
+                          )}
+                        >
+                          <span
+                            aria-hidden
+                            className={cn(
+                              "size-1.5 rounded-full",
+                              lane === "tumor"
+                                ? "bg-[color:var(--lane-tumor)]"
+                                : "bg-[color:var(--lane-normal)]"
+                            )}
+                          />
+                          <span className="font-medium">
+                            {formatLaneLabel(lane)}
+                          </span>
+                          <span className="text-slate-500">
+                            {getLaneStatusLabel(summary)}
+                          </span>
+                        </span>
+                      );
+                    })}
+                  </div>
                 </div>
-                <Badge
-                  variant="outline"
-                  className="border-black/10 bg-slate-50 text-slate-600"
-                >
-                  {currentStage.implementationState}
-                </Badge>
               </div>
-            </div>
+            ) : (
+              <div className="rounded-[24px] border border-black/5 bg-white/70 px-6 py-5 shadow-sm shadow-black/5 backdrop-blur">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-2xl font-semibold tracking-tight">
+                      {currentStage.name}
+                    </h2>
+                    <p
+                      className="mt-1 max-w-2xl font-display text-[15px] italic text-muted-foreground"
+                      style={{ fontOpticalSizing: "auto" }}
+                    >
+                      {currentStage.description}
+                    </p>
+                  </div>
+                  <Badge
+                    variant="outline"
+                    className="border-black/10 bg-slate-50/70 font-mono text-[10px] tracking-[0.18em] text-slate-500 uppercase"
+                  >
+                    {currentStage.implementationState}
+                  </Badge>
+                </div>
+              </div>
+            )}
 
             {currentStageId === "ingestion" ? (
               <IngestionStagePanel

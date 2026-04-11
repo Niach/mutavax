@@ -79,7 +79,11 @@ export default function WorkspaceCreateCard({
         <CardTitle className="text-xl">{title}</CardTitle>
       </CardHeader>
       <CardContent className="px-6">
-        <form className="space-y-4" onSubmit={handleSubmit}>
+        <form
+          className="space-y-4"
+          onSubmit={handleSubmit}
+          data-testid="workspace-create-form"
+        >
           <div
             className="grid gap-3 sm:grid-cols-3"
             role="group"
@@ -94,6 +98,7 @@ export default function WorkspaceCreateCard({
                   key={option.value}
                   type="button"
                   onClick={() => setSpecies(option.value)}
+                  data-testid={`workspace-species-${option.value}`}
                   className={cn(
                     "flex flex-col items-center gap-2 rounded-2xl border px-4 py-3 transition",
                     isSelected
@@ -113,6 +118,7 @@ export default function WorkspaceCreateCard({
             aria-label="Workspace name"
             value={displayName}
             onChange={(event) => setDisplayName(event.target.value)}
+            data-testid="workspace-name-input"
             className={fieldClassName}
             placeholder="e.g. Rosie baseline"
           />
@@ -128,6 +134,7 @@ export default function WorkspaceCreateCard({
             size="lg"
             className="w-full bg-emerald-500 text-emerald-950 hover:bg-emerald-400"
             disabled={isSubmitting || isRouting || !displayName.trim()}
+            data-testid="workspace-create-submit"
           >
             {isSubmitting || isRouting ? (
               <LoaderCircle className="size-4 animate-spin" />

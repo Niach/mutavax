@@ -1,10 +1,13 @@
 import type {
   CreateWorkspaceInput,
+  FastqReadPreview,
   IngestionLaneSummary,
+  IngestionLanePreview,
   IngestionSummary,
   Job,
   PipelineStageId,
   ReadPair,
+  SampledReadStats,
   SampleLane,
   UploadPartResult,
   UploadSession,
@@ -47,6 +50,7 @@ type IngestionLaneSummaryDto = {
   canonical_file_count: number;
   missing_pairs: ReadPair[];
   blocking_issues: string[];
+  read_layout?: IngestionLaneSummary["readLayout"];
   updated_at?: string | null;
 };
 
@@ -101,6 +105,33 @@ type UploadSessionDto = {
   updated_at: string;
 };
 
+type FastqReadPreviewDto = {
+  header: string;
+  sequence: string;
+  quality: string;
+  length: number;
+  gc_percent: number;
+  mean_quality: number;
+};
+
+type SampledReadStatsDto = {
+  sampled_read_count: number;
+  average_read_length: number;
+  sampled_gc_percent: number;
+};
+
+type IngestionLanePreviewDto = {
+  workspace_id: string;
+  sample_lane: SampleLane;
+  batch_id: string;
+  source: "canonical-fastq";
+  read_layout: IngestionLanePreview["readLayout"];
+  reads: Partial<
+    Record<Extract<ReadPair, "R1" | "R2" | "SE">, FastqReadPreviewDto[]>
+  >;
+  stats: SampledReadStatsDto;
+};
+
 type JobDto = {
   id: string;
   workspace_id: string | null;
@@ -141,6 +172,7 @@ function mapIngestionLaneSummary(dto: IngestionLaneSummaryDto): IngestionLaneSum
     canonicalFileCount: dto.canonical_file_count,
     missingPairs: dto.missing_pairs,
     blockingIssues: dto.blocking_issues,
+    readLayout: dto.read_layout ?? null,
     updatedAt: dto.updated_at,
   };
 }
@@ -206,6 +238,49 @@ function mapUploadSession(dto: UploadSessionDto): UploadSession {
     files: dto.files.map(mapUploadSessionFile),
     createdAt: dto.created_at,
     updatedAt: dto.updated_at,
+  };
+}
+
+function mapFastqReadPreview(dto: FastqReadPreviewDto): FastqReadPreview {
+  return {
+    header: dto.header,
+    sequence: dto.sequence,
+    quality: dto.quality,
+    length: dto.length,
+    gcPercent: dto.gc_percent,
+    meanQuality: dto.mean_quality,
+  };
+}
+
+function mapSampledReadStats(dto: SampledReadStatsDto): SampledReadStats {
+  return {
+    sampledReadCount: dto.sampled_read_count,
+    averageReadLength: dto.average_read_length,
+    sampledGcPercent: dto.sampled_gc_percent,
+  };
+}
+
+function mapIngestionLanePreview(
+  dto: IngestionLanePreviewDto
+): IngestionLanePreview {
+  const reads: IngestionLanePreview["reads"] = {};
+  if (dto.reads.R1) {
+    reads.R1 = dto.reads.R1.map(mapFastqReadPreview);
+  }
+  if (dto.reads.R2) {
+    reads.R2 = dto.reads.R2.map(mapFastqReadPreview);
+  }
+  if (dto.reads.SE) {
+    reads.SE = dto.reads.SE.map(mapFastqReadPreview);
+  }
+  return {
+    workspaceId: dto.workspace_id,
+    sampleLane: dto.sample_lane,
+    batchId: dto.batch_id,
+    source: dto.source,
+    readLayout: dto.read_layout,
+    reads,
+    stats: mapSampledReadStats(dto.stats),
   };
 }
 
@@ -340,6 +415,15 @@ export const api = {
     (await request<WorkspaceDto[]>("/api/workspaces")).map(mapWorkspace),
   getWorkspace: async (workspaceId: string) =>
     mapWorkspace(await request<WorkspaceDto>(`/api/workspaces/${workspaceId}`)),
+  getIngestionLanePreview: async (
+    workspaceId: string,
+    sampleLane: SampleLane
+  ) =>
+    mapIngestionLanePreview(
+      await request<IngestionLanePreviewDto>(
+        `/api/workspaces/${workspaceId}/ingestion/preview/${sampleLane}`
+      )
+    ),
   createWorkspace: async (input: CreateWorkspaceInput) =>
     mapWorkspace(
       await request<WorkspaceDto>("/api/workspaces", {
@@ -409,6 +493,13 @@ export const api = {
       await request<WorkspaceDto>(
         `/api/workspaces/${workspaceId}/ingestion/sessions/${sessionId}/commit`,
         { method: "POST" }
+      )
+    ),
+  deleteUploadSession: async (workspaceId: string, sessionId: string) =>
+    mapWorkspace(
+      await request<WorkspaceDto>(
+        `/api/workspaces/${workspaceId}/ingestion/sessions/${sessionId}`,
+        { method: "DELETE" }
       )
     ),
   updateWorkspaceActiveStage: async (

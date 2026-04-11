@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -79,7 +79,13 @@ class UploadSessionFileStatus(str, Enum):
 class ReadPair(str, Enum):
     R1 = "R1"
     R2 = "R2"
+    SE = "SE"
     UNKNOWN = "unknown"
+
+
+class ReadLayout(str, Enum):
+    PAIRED = "paired"
+    SINGLE = "single"
 
 
 class WorkspaceFileResponse(BaseModel):
@@ -107,6 +113,7 @@ class IngestionLaneSummaryResponse(BaseModel):
     canonical_file_count: int = 0
     missing_pairs: List[ReadPair] = Field(default_factory=list)
     blocking_issues: List[str] = Field(default_factory=list)
+    read_layout: Optional[ReadLayout] = None
     updated_at: Optional[str] = None
 
 
@@ -180,6 +187,31 @@ class UploadSessionResponse(BaseModel):
     files: List[UploadSessionFileResponse] = Field(default_factory=list)
     created_at: str
     updated_at: str
+
+
+class FastqReadPreview(BaseModel):
+    header: str
+    sequence: str
+    quality: str
+    length: int
+    gc_percent: float
+    mean_quality: float
+
+
+class SampledReadStats(BaseModel):
+    sampled_read_count: int
+    average_read_length: float
+    sampled_gc_percent: float
+
+
+class IngestionLanePreviewResponse(BaseModel):
+    workspace_id: str
+    sample_lane: SampleLane
+    batch_id: str
+    source: Literal["canonical-fastq"] = "canonical-fastq"
+    read_layout: ReadLayout = ReadLayout.PAIRED
+    reads: Dict[ReadPair, List[FastqReadPreview]] = Field(default_factory=dict)
+    stats: SampledReadStats
 
 
 class JobSubmitRequest(BaseModel):

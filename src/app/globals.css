@@ -86,6 +86,13 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* Specimen-lane accents. Tumor = warm mineral, Normal = cool teal.
+     Applied per card via inline style={{ "--lane-accent": "var(--lane-tumor)" }}. */
+  --lane-tumor: oklch(0.68 0.12 38);
+  --lane-tumor-soft: oklch(0.96 0.028 42);
+  --lane-normal: oklch(0.66 0.09 186);
+  --lane-normal-soft: oklch(0.96 0.022 188);
 }
 
 .dark {
@@ -134,17 +141,48 @@
   }
 }
 
-@keyframes ingest-lane-rise {
-  from {
-    opacity: 0;
-    transform: translateY(14px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+/* Scrollbar styling for instrument-trace horizontal scroll containers.
+   Thin, restrained, specimen-console. */
+.trace-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(0.85 0 0) transparent;
+}
+.trace-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+.trace-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.trace-scroll::-webkit-scrollbar-thumb {
+  background-color: oklch(0.85 0 0);
+  border-radius: 999px;
+}
+.trace-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: oklch(0.75 0 0);
 }
 
-.ingest-lane {
-  animation: ingest-lane-rise 600ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+/* Right-edge fade that hints at horizontal overflow without adding a gradient overlay
+   element to the DOM. Paired with overflow-x-auto in the preview. */
+.trace-fade-right {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    black 0,
+    black calc(100% - 28px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    black 0,
+    black calc(100% - 28px),
+    transparent 100%
+  );
+}
+
+/* Gentle breathing pulse for the normalization state — softer than animate-pulse. */
+@keyframes specimen-breath {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+.specimen-breath {
+  animation: specimen-breath 2.4s ease-in-out infinite;
 }

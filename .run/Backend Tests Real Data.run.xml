@@ -1,0 +1,14 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Backend Tests Real Data" type="js.build_tools.npm">
+    <package-json value="$PROJECT_DIR$/package.json" />
+    <command value="run" />
+    <scripts>
+      <script value="test:backend:real-data" />
+    </scripts>
+    <node-interpreter value="project" />
+    <envs>
+      <env name="REAL_DATA_API_BASE" value="http://127.0.0.1:8000" />
+    </envs>
+    <method v="2" />
+  </configuration>
+</component>

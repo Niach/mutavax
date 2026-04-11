@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = BACKEND_ROOT.parent
 DEFAULT_SQLITE_PATH = BACKEND_ROOT / "data" / "app.db"
 
 
@@ -13,13 +14,26 @@ class Base(DeclarativeBase):
     pass
 
 
+def get_local_sqlite_path() -> Path:
+    configured = os.getenv("LOCAL_SQLITE_PATH")
+    if not configured:
+        return DEFAULT_SQLITE_PATH
+
+    configured_path = Path(configured).expanduser()
+    if configured_path.is_absolute():
+        return configured_path
+
+    return (REPO_ROOT / configured_path).resolve()
+
+
 def get_database_url() -> str:
     configured = os.getenv("DATABASE_URL")
     if configured:
         return configured
 
-    DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    return f"sqlite:///{DEFAULT_SQLITE_PATH}"
+    sqlite_path = get_local_sqlite_path()
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    return f"sqlite:///{sqlite_path}"
 
 
 def _create_engine():
@@ -93,6 +107,11 @@ def _ensure_schema_updates() -> None:
         "sample_lane",
         "VARCHAR(16) NOT NULL DEFAULT 'tumor'",
     )
+    _ensure_bigint_column(inspector, "workspace_files", "size_bytes")
+    _ensure_bigint_column(inspector, "upload_session_files", "size_bytes")
+    _ensure_bigint_column(inspector, "upload_session_files", "uploaded_bytes")
+    _ensure_bigint_column(inspector, "upload_session_files", "last_modified_ms")
+    _ensure_bigint_column(inspector, "upload_session_parts", "size_bytes")
 
 
 def _ensure_column(inspector, table_name: str, column_name: str, definition: str) -> None:
@@ -105,3 +124,32 @@ def _ensure_column(inspector, table_name: str, column_name: str, definition: str
 
     with engine.begin() as connection:
         connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
+
+
+def _ensure_bigint_column(inspector, table_name: str, column_name: str) -> None:
+    if engine.dialect.name != "postgresql":
+        return
+
+    if table_name not in inspector.get_table_names():
+        return
+
+    columns = {
+        column["name"]: column
+        for column in inspector.get_columns(table_name)
+    }
+    column = columns.get(column_name)
+    if column is None:
+        return
+
+    type_name = str(column["type"]).upper()
+    if "BIGINT" in type_name or "INT8" in type_name:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                f"ALTER TABLE {table_name} "
+                f"ALTER COLUMN {column_name} TYPE BIGINT "
+                f"USING {column_name}::bigint"
+            )
+        )

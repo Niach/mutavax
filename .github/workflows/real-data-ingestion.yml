@@ -1,0 +1,142 @@
+name: Real-Data Ingestion Tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  real-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Create Python virtualenv
+        run: python -m venv .venv
+
+      - name: Install backend dependencies
+        run: ./.venv/bin/pip install -r backend/requirements.txt
+
+      - name: Fetch smoke sample data
+        run: npm run sample-data:smoke
+
+      - name: Start infrastructure services
+        run: docker compose up -d postgres minio bucket-init
+
+      - name: Start backend
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/cancerstudio
+          S3_BUCKET: workspace-data
+          S3_ENDPOINT_URL: http://127.0.0.1:9000
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_REGION: us-east-1
+          S3_FORCE_PATH_STYLE: "true"
+          CORS_ALLOW_ORIGINS: http://127.0.0.1:3000,http://localhost:3000
+        run: |
+          mkdir -p .run
+          ./.venv/bin/uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 > .run/backend.log 2>&1 &
+          echo $! > .run/backend.pid
+
+      - name: Wait for backend
+        run: python3 scripts/wait_for_http.py http://127.0.0.1:8000/health --timeout 60
+
+      - name: Run real-data backend integration
+        env:
+          REAL_DATA_API_BASE: http://127.0.0.1:8000
+        run: npm run test:backend:real-data
+
+      - name: Stop backend before browser reset
+        if: always()
+        run: |
+          if [ -f .run/backend.pid ]; then
+            kill "$(cat .run/backend.pid)" || true
+            rm .run/backend.pid
+          fi
+
+      - name: Reset infrastructure for browser smoke
+        if: always()
+        run: |
+          docker compose down -v || true
+          rm -rf minio-data
+          docker compose up -d postgres minio bucket-init
+
+      - name: Restart backend for browser smoke
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/cancerstudio
+          S3_BUCKET: workspace-data
+          S3_ENDPOINT_URL: http://127.0.0.1:9000
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_REGION: us-east-1
+          S3_FORCE_PATH_STYLE: "true"
+          CORS_ALLOW_ORIGINS: http://127.0.0.1:3000,http://localhost:3000
+        run: |
+          ./.venv/bin/uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 > .run/backend-browser.log 2>&1 &
+          echo $! > .run/backend-browser.pid
+
+      - name: Wait for backend after reset
+        run: python3 scripts/wait_for_http.py http://127.0.0.1:8000/health --timeout 60
+
+      - name: Start frontend
+        env:
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+          INTERNAL_API_URL: http://127.0.0.1:8000
+        run: |
+          npm run dev -- --hostname 127.0.0.1 --port 3000 > .run/frontend.log 2>&1 &
+          echo $! > .run/frontend.pid
+
+      - name: Wait for frontend
+        run: python3 scripts/wait_for_http.py http://127.0.0.1:3000 --timeout 120
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser smoke
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
+        run: npm run test:browser:real-data
+
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-data-ingestion-debug
+          path: |
+            .run
+            playwright-report
+            test-results
+
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ -f .run/frontend.pid ]; then
+            kill "$(cat .run/frontend.pid)" || true
+          fi
+          if [ -f .run/backend-browser.pid ]; then
+            kill "$(cat .run/backend-browser.pid)" || true
+          fi
+          if [ -f .run/backend.pid ]; then
+            kill "$(cat .run/backend.pid)" || true
+          fi
+          docker compose down -v || true
