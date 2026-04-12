@@ -89,6 +89,48 @@ def _ensure_schema_updates() -> None:
     )
     _ensure_column(
         inspector,
+        "ingestion_batches",
+        "progress_phase",
+        "VARCHAR(64)",
+    )
+    _ensure_column(
+        inspector,
+        "ingestion_batches",
+        "progress_current_filename",
+        "VARCHAR(512)",
+    )
+    _ensure_column(
+        inspector,
+        "ingestion_batches",
+        "progress_bytes_processed",
+        "BIGINT",
+    )
+    _ensure_column(
+        inspector,
+        "ingestion_batches",
+        "progress_total_bytes",
+        "BIGINT",
+    )
+    _ensure_column(
+        inspector,
+        "ingestion_batches",
+        "progress_throughput_bytes_per_sec",
+        "FLOAT",
+    )
+    _ensure_column(
+        inspector,
+        "ingestion_batches",
+        "progress_eta_seconds",
+        "FLOAT",
+    )
+    _ensure_column(
+        inspector,
+        "ingestion_batches",
+        "progress_percent",
+        "FLOAT",
+    )
+    _ensure_column(
+        inspector,
         "workspace_files",
         "sample_lane",
         "VARCHAR(16) NOT NULL DEFAULT 'tumor'",
@@ -135,6 +177,7 @@ def _ensure_schema_updates() -> None:
         "runtime_phase",
         "VARCHAR(64)",
     )
+    _ensure_workspace_file_storage_key_not_unique()
 
 
 def _ensure_column(inspector, table_name: str, column_name: str, definition: str) -> None:
@@ -147,3 +190,129 @@ def _ensure_column(inspector, table_name: str, column_name: str, definition: str
 
     with engine.begin() as connection:
         connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
+
+
+def _ensure_workspace_file_storage_key_not_unique() -> None:
+    inspector = inspect(engine)
+    if "workspace_files" not in inspector.get_table_names():
+        return
+
+    with engine.begin() as connection:
+        unique_storage_key_indexes = []
+        for index_row in connection.execute(text("PRAGMA index_list('workspace_files')")).mappings():
+            if not index_row["unique"]:
+                continue
+            index_name = index_row["name"]
+            columns = [
+                column_row["name"]
+                for column_row in connection.execute(
+                    text(f"PRAGMA index_info('{index_name}')")
+                ).mappings()
+            ]
+            if columns == ["storage_key"]:
+                unique_storage_key_indexes.append(index_name)
+
+        if not unique_storage_key_indexes:
+            return
+
+        connection.execute(text("PRAGMA foreign_keys=OFF"))
+        try:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE workspace_files__migrated (
+                        id VARCHAR(36) NOT NULL PRIMARY KEY,
+                        workspace_id VARCHAR(36) NOT NULL,
+                        batch_id VARCHAR(36) NOT NULL,
+                        source_file_id VARCHAR(36),
+                        sample_lane VARCHAR(16) NOT NULL DEFAULT 'tumor',
+                        filename VARCHAR(512) NOT NULL,
+                        format VARCHAR(32) NOT NULL,
+                        file_role VARCHAR(32) NOT NULL,
+                        status VARCHAR(32) NOT NULL,
+                        read_pair VARCHAR(32) NOT NULL,
+                        storage_key VARCHAR(1024) NOT NULL,
+                        source_path VARCHAR(4096),
+                        local_path VARCHAR(4096),
+                        size_bytes BIGINT NOT NULL,
+                        uploaded_at DATETIME NOT NULL,
+                        error TEXT,
+                        FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE,
+                        FOREIGN KEY(batch_id) REFERENCES ingestion_batches (id) ON DELETE CASCADE,
+                        FOREIGN KEY(source_file_id) REFERENCES workspace_files (id) ON DELETE SET NULL
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO workspace_files__migrated (
+                        id,
+                        workspace_id,
+                        batch_id,
+                        source_file_id,
+                        sample_lane,
+                        filename,
+                        format,
+                        file_role,
+                        status,
+                        read_pair,
+                        storage_key,
+                        source_path,
+                        local_path,
+                        size_bytes,
+                        uploaded_at,
+                        error
+                    )
+                    SELECT
+                        id,
+                        workspace_id,
+                        batch_id,
+                        source_file_id,
+                        sample_lane,
+                        filename,
+                        format,
+                        file_role,
+                        status,
+                        read_pair,
+                        storage_key,
+                        source_path,
+                        local_path,
+                        size_bytes,
+                        uploaded_at,
+                        error
+                    FROM workspace_files
+                    """
+                )
+            )
+            connection.execute(text("DROP TABLE workspace_files"))
+            connection.execute(
+                text("ALTER TABLE workspace_files__migrated RENAME TO workspace_files")
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX ix_workspace_files_workspace_id "
+                    "ON workspace_files (workspace_id)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX ix_workspace_files_batch_id "
+                    "ON workspace_files (batch_id)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX ix_workspace_files_source_file_id "
+                    "ON workspace_files (source_file_id)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX ix_workspace_files_sample_lane "
+                    "ON workspace_files (sample_lane)"
+                )
+            )
+        finally:
+            connection.execute(text("PRAGMA foreign_keys=ON"))

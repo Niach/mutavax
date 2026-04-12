@@ -18,6 +18,13 @@ from app.services.alignment import (
     load_alignment_stage_summary,
     rerun_alignment,
 )
+from app.services.tool_preflight import (
+    ALIGNMENT_TOOLS,
+    InsufficientMemoryError,
+    MissingToolError,
+    ingestion_tools_for_paths,
+    verify_tools,
+)
 from app.services.workspace_store import (
     create_workspace,
     LanePreviewUnavailableError,
@@ -35,6 +42,14 @@ router = APIRouter()
 
 def unexpected_workspace_error(action: str, error: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=f"{action} failed: {error}")
+
+
+def missing_tools_error(error: MissingToolError) -> HTTPException:
+    return HTTPException(status_code=503, detail=error.to_payload())
+
+
+def insufficient_memory_error(error: InsufficientMemoryError) -> HTTPException:
+    return HTTPException(status_code=503, detail=error.to_payload())
 
 
 @router.get("/", response_model=list[WorkspaceResponse])
@@ -100,7 +115,12 @@ async def get_alignment_stage_summary(workspace_id: str):
 )
 async def run_alignment_stage(workspace_id: str):
     try:
+        verify_tools(ALIGNMENT_TOOLS)
         return create_alignment_run(workspace_id)
+    except MissingToolError as error:
+        raise missing_tools_error(error) from error
+    except InsufficientMemoryError as error:
+        raise insufficient_memory_error(error) from error
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
@@ -115,7 +135,12 @@ async def run_alignment_stage(workspace_id: str):
 )
 async def rerun_alignment_stage(workspace_id: str):
     try:
+        verify_tools(ALIGNMENT_TOOLS)
         return rerun_alignment(workspace_id)
+    except MissingToolError as error:
+        raise missing_tools_error(error) from error
+    except InsufficientMemoryError as error:
+        raise insufficient_memory_error(error) from error
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
@@ -173,7 +198,10 @@ async def register_local_files_route(
     request: LocalFileRegistrationRequest,
 ):
     try:
+        verify_tools(ingestion_tools_for_paths(request.paths))
         return register_local_lane_files(workspace_id, request)
+    except MissingToolError as error:
+        raise missing_tools_error(error) from error
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:

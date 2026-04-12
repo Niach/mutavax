@@ -28,6 +28,13 @@ export type IngestionStatus =
   | "normalizing"
   | "ready"
   | "failed";
+export type IngestionProgressPhase =
+  | "validating"
+  | "referencing"
+  | "concatenating"
+  | "compressing"
+  | "extracting"
+  | "finalizing";
 export type ReadPair = "R1" | "R2" | "SE" | "unknown";
 export type ReadLayout = "paired" | "single";
 export type StageImplementationState = "live" | "mock" | "planned";
@@ -89,6 +96,17 @@ export interface IngestionLaneSummary {
   blockingIssues: string[];
   readLayout?: ReadLayout | null;
   updatedAt?: string | null;
+  progress?: IngestionLaneProgress | null;
+}
+
+export interface IngestionLaneProgress {
+  phase: IngestionProgressPhase;
+  currentFilename?: string | null;
+  bytesProcessed?: number | null;
+  totalBytes?: number | null;
+  throughputBytesPerSec?: number | null;
+  etaSeconds?: number | null;
+  percent?: number | null;
 }
 
 export interface IngestionSummary {

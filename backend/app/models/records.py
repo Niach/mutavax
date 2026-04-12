@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -48,6 +48,15 @@ class IngestionBatchRecord(Base):
     sample_stem: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    progress_phase: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    progress_current_filename: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    progress_bytes_processed: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    progress_total_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    progress_throughput_bytes_per_sec: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True
+    )
+    progress_eta_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    progress_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -78,7 +87,7 @@ class WorkspaceFileRecord(Base):
     file_role: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     read_pair: Mapped[str] = mapped_column(String(32), nullable=False)
-    storage_key: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
+    storage_key: Mapped[str] = mapped_column(String(1024), nullable=False)
     source_path: Mapped[Optional[str]] = mapped_column(String(4096), nullable=True)
     local_path: Mapped[Optional[str]] = mapped_column(String(4096), nullable=True)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)

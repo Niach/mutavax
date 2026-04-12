@@ -1,0 +1,41 @@
+{
+  "sourceWeights": {
+    "peer_reviewed_literature": 0.76,
+    "preprint": 0.5,
+    "clinical_trial": 0.68,
+    "official_resource": 0.82,
+    "official_tool": 0.79
+  },
+  "evidenceConfidence": {
+    "peer-reviewed": 0.84,
+    "preprint": 0.52,
+    "clinical-trial": 0.72,
+    "official-update": 0.81
+  },
+  "stagePriorityBoosts": {
+    "ingestion": 0.04,
+    "alignment": 0.05,
+    "variant-calling": 0.12,
+    "annotation": 0.1,
+    "neoantigen-prediction": 0.18,
+    "epitope-selection": 0.14,
+    "construct-design": 0.1,
+    "structure-prediction": 0.03,
+    "construct-output": 0.08,
+    "ai-review": 0.02
+  },
+  "speciesPriorityBoosts": {
+    "human": 0.06,
+    "dog": 0.12,
+    "cat": 0.04,
+    "cross-species": 0.05
+  },
+  "bucketThresholds": {
+    "implement": 0.82,
+    "benchmark": 0.67,
+    "monitor": 0.45
+  },
+  "strongPreprintThreshold": 0.9,
+  "topFindingCount": 5,
+  "corroboratedSourcesNeeded": 2
+}

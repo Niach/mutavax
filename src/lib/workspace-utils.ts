@@ -56,14 +56,14 @@ export function getLaneReadyCanonicalPairs(
   workspace: Workspace,
   sampleLane: SampleLane
 ): Array<Extract<ReadPair, "R1" | "R2">> {
-  return getLaneBatchFiles(workspace, sampleLane)
-    .filter(
-      (file) =>
-        file.fileRole === "canonical" &&
-        file.status === "ready" &&
-        (file.readPair === "R1" || file.readPair === "R2")
-    )
-    .map((file) => file.readPair as Extract<ReadPair, "R1" | "R2">);
+  const summary = workspace.ingestion.lanes[sampleLane];
+  if (summary.canonicalFileCount <= 0) {
+    return [];
+  }
+
+  return (["R1", "R2"] as const).filter(
+    (readPair) => !summary.missingPairs.includes(readPair)
+  );
 }
 
 export function getWorkspaceRequiredOutputs(
@@ -173,13 +173,13 @@ export function getCompactIssueLabel(issue?: string | null) {
   if (lower.includes("upload at least one sequencing file")) {
     return "Awaiting files";
   }
-  if (lower.includes("malformed canonical fastq preview")) {
+  if (lower.includes("malformed sequence preview")) {
     return "Preview malformed";
   }
-  if (lower.includes("unable to read canonical fastq preview")) {
+  if (lower.includes("unable to read sequence preview")) {
     return "Preview unavailable";
   }
-  if (lower.includes("unable to decode canonical fastq preview")) {
+  if (lower.includes("unable to decode sequence preview")) {
     return "Preview unavailable";
   }
 

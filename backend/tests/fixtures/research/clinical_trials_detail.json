@@ -1,0 +1,17 @@
+{
+  "protocolSection": {
+    "identificationModule": {
+      "nctId": "NCT03794128",
+      "briefTitle": "A Study of Personalized Neoantigen Cancer Vaccines"
+    },
+    "statusModule": {
+      "overallStatus": "COMPLETED",
+      "lastUpdatePostDateStruct": {
+        "date": "2026-04-08"
+      }
+    },
+    "descriptionModule": {
+      "briefSummary": "Detailed summary describing manufacturing feasibility and screening for shared neoantigen vaccine candidates."
+    }
+  }
+}

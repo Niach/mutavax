@@ -10,6 +10,7 @@ import type {
   FastqReadPreview,
   IngestionLaneSummary,
   IngestionLanePreview,
+  IngestionLaneProgress,
   IngestionSummary,
   LocalFileRegistrationInput,
   PipelineStageId,
@@ -57,6 +58,17 @@ type IngestionLaneSummaryDto = {
   blocking_issues: string[];
   read_layout?: IngestionLaneSummary["readLayout"];
   updated_at?: string | null;
+  progress?: IngestionLaneProgressDto | null;
+};
+
+type IngestionLaneProgressDto = {
+  phase: IngestionLaneProgress["phase"];
+  current_filename?: string | null;
+  bytes_processed?: number | null;
+  total_bytes?: number | null;
+  throughput_bytes_per_sec?: number | null;
+  eta_seconds?: number | null;
+  percent?: number | null;
 };
 
 type IngestionSummaryDto = {
@@ -194,6 +206,17 @@ function mapIngestionLaneSummary(dto: IngestionLaneSummaryDto): IngestionLaneSum
     blockingIssues: dto.blocking_issues,
     readLayout: dto.read_layout ?? null,
     updatedAt: dto.updated_at,
+    progress: dto.progress
+      ? {
+          phase: dto.progress.phase,
+          currentFilename: dto.progress.current_filename ?? null,
+          bytesProcessed: dto.progress.bytes_processed ?? null,
+          totalBytes: dto.progress.total_bytes ?? null,
+          throughputBytesPerSec: dto.progress.throughput_bytes_per_sec ?? null,
+          etaSeconds: dto.progress.eta_seconds ?? null,
+          percent: dto.progress.percent ?? null,
+        }
+      : null,
   };
 }
 
@@ -352,6 +375,103 @@ function mapAlignmentStageSummary(
   };
 }
 
+export class MissingToolsError extends Error {
+  readonly tools: string[];
+  readonly hints: string[];
+
+  constructor(message: string, tools: string[], hints: string[]) {
+    super(message);
+    this.name = "MissingToolsError";
+    this.tools = tools;
+    this.hints = hints;
+  }
+}
+
+export class InsufficientMemoryError extends Error {
+  readonly requiredBytes: number;
+  readonly availableBytes: number | null;
+  readonly purpose: string;
+
+  constructor(
+    message: string,
+    requiredBytes: number,
+    availableBytes: number | null,
+    purpose: string
+  ) {
+    super(message);
+    this.name = "InsufficientMemoryError";
+    this.requiredBytes = requiredBytes;
+    this.availableBytes = availableBytes;
+    this.purpose = purpose;
+  }
+}
+
+type MissingToolsDetail = {
+  code: "missing_tools";
+  tools: string[];
+  hints: string[];
+  message: string;
+};
+
+type InsufficientMemoryDetail = {
+  code: "insufficient_memory";
+  required_bytes: number;
+  available_bytes: number | null;
+  purpose: string;
+  message: string;
+};
+
+function parseMissingToolsDetail(payload: string): MissingToolsDetail | null {
+  try {
+    const parsed = JSON.parse(payload) as { detail?: unknown };
+    const detail = parsed.detail;
+    if (
+      detail &&
+      typeof detail === "object" &&
+      (detail as { code?: unknown }).code === "missing_tools"
+    ) {
+      const typed = detail as Partial<MissingToolsDetail>;
+      return {
+        code: "missing_tools",
+        tools: Array.isArray(typed.tools) ? typed.tools.map(String) : [],
+        hints: Array.isArray(typed.hints) ? typed.hints.map(String) : [],
+        message: typeof typed.message === "string" ? typed.message : "Required tools are missing.",
+      };
+    }
+  } catch {}
+  return null;
+}
+
+function parseInsufficientMemoryDetail(
+  payload: string
+): InsufficientMemoryDetail | null {
+  try {
+    const parsed = JSON.parse(payload) as { detail?: unknown };
+    const detail = parsed.detail;
+    if (
+      detail &&
+      typeof detail === "object" &&
+      (detail as { code?: unknown }).code === "insufficient_memory"
+    ) {
+      const typed = detail as Partial<InsufficientMemoryDetail>;
+      return {
+        code: "insufficient_memory",
+        required_bytes:
+          typeof typed.required_bytes === "number" ? typed.required_bytes : 0,
+        available_bytes:
+          typeof typed.available_bytes === "number" ? typed.available_bytes : null,
+        purpose:
+          typeof typed.purpose === "string" ? typed.purpose : "A pipeline step",
+        message:
+          typeof typed.message === "string"
+            ? typed.message
+            : "Not enough free memory to run this step.",
+      };
+    }
+  } catch {}
+  return null;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers);
   const isFormData =
@@ -368,13 +488,33 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const payload = await res.text();
-    let detail: string | undefined;
 
+    if (res.status === 503) {
+      const missing = parseMissingToolsDetail(payload);
+      if (missing) {
+        throw new MissingToolsError(missing.message, missing.tools, missing.hints);
+      }
+      const memory = parseInsufficientMemoryDetail(payload);
+      if (memory) {
+        throw new InsufficientMemoryError(
+          memory.message,
+          memory.required_bytes,
+          memory.available_bytes,
+          memory.purpose
+        );
+      }
+    }
+
+    let detail: string | undefined;
     try {
-      detail = (JSON.parse(payload) as { detail?: string }).detail;
+      detail = (JSON.parse(payload) as { detail?: unknown }).detail as
+        | string
+        | undefined;
     } catch {}
 
-    throw new Error((detail ?? payload) || `API error: ${res.status}`);
+    throw new Error(
+      (typeof detail === "string" ? detail : payload) || `API error: ${res.status}`
+    );
   }
 
   if (res.status === 204) {

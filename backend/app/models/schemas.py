@@ -66,6 +66,15 @@ class IngestionStatus(str, Enum):
     FAILED = "failed"
 
 
+class IngestionProgressPhase(str, Enum):
+    VALIDATING = "validating"
+    REFERENCING = "referencing"
+    CONCATENATING = "concatenating"
+    COMPRESSING = "compressing"
+    EXTRACTING = "extracting"
+    FINALIZING = "finalizing"
+
+
 class ReadPair(str, Enum):
     R1 = "R1"
     R2 = "R2"
@@ -136,6 +145,16 @@ class WorkspaceFileResponse(BaseModel):
     error: Optional[str] = None
 
 
+class IngestionLaneProgressResponse(BaseModel):
+    phase: IngestionProgressPhase
+    current_filename: Optional[str] = None
+    bytes_processed: Optional[int] = None
+    total_bytes: Optional[int] = None
+    throughput_bytes_per_sec: Optional[float] = None
+    eta_seconds: Optional[float] = None
+    percent: Optional[float] = None
+
+
 class IngestionLaneSummaryResponse(BaseModel):
     active_batch_id: Optional[str] = None
     sample_lane: SampleLane
@@ -147,6 +166,7 @@ class IngestionLaneSummaryResponse(BaseModel):
     blocking_issues: List[str] = Field(default_factory=list)
     read_layout: Optional[ReadLayout] = None
     updated_at: Optional[str] = None
+    progress: Optional[IngestionLaneProgressResponse] = None
 
 
 class IngestionSummaryResponse(BaseModel):

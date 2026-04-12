@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 const repoRoot = path.resolve(__dirname, "..", "..");
 const apiBase = process.env.REAL_DATA_API_BASE ?? "http://127.0.0.1:8001";
@@ -14,14 +14,50 @@ function samplePath(filename: string) {
   const filePath = path.join(sampleDir, filename);
   if (!fs.existsSync(filePath)) {
     throw new Error(
-      `Missing real-data sample fixture: ${filePath}. Run npm run sample-data:smoke or set REAL_DATA_SAMPLE_DIR.`
+      `Missing ingestion smoke fixture: ${filePath}. Run npm run sample-data:smoke or set REAL_DATA_SAMPLE_DIR.`
     );
   }
   return filePath;
 }
 
-test("manual local-path intake reaches alignment-ready state", async ({ page }) => {
+function selectedFile(filename: string) {
+  const filePath = samplePath(filename);
+  const stats = fs.statSync(filePath);
+  return {
+    path: filePath,
+    name: path.basename(filePath),
+    sizeBytes: stats.size,
+    modifiedAtMs: stats.mtimeMs,
+  };
+}
+
+async function installDesktopMock(
+  page: Page,
+  selections: Array<
+    Array<{
+      path: string;
+      name: string;
+      sizeBytes: number;
+      modifiedAtMs: number;
+    }>
+  >
+) {
+  await page.addInitScript((queuedSelections) => {
+    const queue = [...queuedSelections];
+    window.cancerstudioDesktop = {
+      pickSequencingFiles: async () => queue.shift() ?? [],
+      openPath: async () => {},
+      getAppDataPath: async () => "/tmp/cancerstudio",
+    };
+  }, selections);
+}
+
+test("desktop ingestion smoke reaches alignment-ready state", async ({ page }) => {
   const stamp = Date.now();
+  await installDesktopMock(page, [
+    [selectedFile("tumor_R1.fastq.gz"), selectedFile("tumor_R2.fastq.gz")],
+    [selectedFile("normal_R1.fastq.gz"), selectedFile("normal_R2.fastq.gz")],
+  ]);
 
   await page.goto("/");
   await page.getByTestId("workspace-species-human").click();
@@ -32,19 +68,13 @@ test("manual local-path intake reaches alignment-ready state", async ({ page }) 
     page.getByTestId("workspace-create-submit").click(),
   ]);
 
-  await page.getByTestId("tumor-manual-paths").fill(
-    [samplePath("tumor_R1.fastq.gz"), samplePath("tumor_R2.fastq.gz")].join("\n")
-  );
-  await page.getByRole("button", { name: "Register paths" }).first().click();
+  await page.getByTestId("tumor-pick-files").click();
   await expect(page.getByTestId("tumor-lane-panel")).toHaveAttribute(
     "data-summary-status",
     "ready"
   );
 
-  await page.getByTestId("normal-manual-paths").fill(
-    [samplePath("normal_R1.fastq.gz"), samplePath("normal_R2.fastq.gz")].join("\n")
-  );
-  await page.getByRole("button", { name: "Register paths" }).nth(1).click();
+  await page.getByTestId("normal-pick-files").click();
 
   await expect(page.getByTestId("normal-lane-panel")).toHaveAttribute(
     "data-summary-status",
@@ -62,6 +92,9 @@ test("manual local-path intake reaches alignment-ready state", async ({ page }) 
 
 test("reset clears derived intake state", async ({ page }) => {
   const stamp = Date.now();
+  await installDesktopMock(page, [
+    [selectedFile("tumor_R1.fastq.gz"), selectedFile("tumor_R2.fastq.gz")],
+  ]);
 
   await page.goto("/");
   await page.getByTestId("workspace-name-input").fill(`Desktop reset ${stamp}`);
@@ -71,10 +104,7 @@ test("reset clears derived intake state", async ({ page }) => {
     page.getByTestId("workspace-create-submit").click(),
   ]);
 
-  await page.getByTestId("tumor-manual-paths").fill(
-    [samplePath("tumor_R1.fastq.gz"), samplePath("tumor_R2.fastq.gz")].join("\n")
-  );
-  await page.getByRole("button", { name: "Register paths" }).first().click();
+  await page.getByTestId("tumor-pick-files").click();
   await expect(page.getByTestId("tumor-lane-panel")).toHaveAttribute(
     "data-summary-status",
     "ready"

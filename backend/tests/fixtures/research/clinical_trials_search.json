@@ -1,0 +1,24 @@
+{
+  "studies": [
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT03794128",
+          "briefTitle": "A Study of Personalized Neoantigen Cancer Vaccines",
+          "officialTitle": "An Observational Feasibility Study for the Production of a Patient-Specific Neoantigen Cancer Vaccine"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "statusVerifiedDate": "2020-09",
+          "studyFirstSubmitDate": "2018-12-31",
+          "lastUpdatePostDateStruct": {
+            "date": "2026-04-08"
+          }
+        },
+        "descriptionModule": {
+          "briefSummary": "Observational feasibility study for a patient-specific neoantigen cancer vaccine."
+        }
+      }
+    }
+  ]
+}

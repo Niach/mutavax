@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Playwright puts minified trace-viewer bundles in here after a test run.
+    "playwright-report/**",
+    "test-results/**",
+    ".run/**",
   ]),
 ]);
 

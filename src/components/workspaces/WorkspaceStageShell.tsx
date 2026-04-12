@@ -26,7 +26,6 @@ import { cn } from "@/lib/utils";
 import {
   formatReferencePreset,
   formatSpeciesLabel,
-  getAlignmentStatusCopy,
 } from "@/lib/workspace-utils";
 
 function mergeWorkspaces(workspaces: Workspace[], workspace: Workspace) {
@@ -194,8 +193,6 @@ export default function WorkspaceStageShell({
     workspace,
     alignmentSummary
   );
-  const alignmentStatusCopy = getAlignmentStatusCopy(alignmentSummary);
-
   function handleWorkspaceChange(updatedWorkspace: Workspace) {
     setWorkspace(updatedWorkspace);
     setWorkspaces((current) => mergeWorkspaces(current, updatedWorkspace));
@@ -304,16 +301,7 @@ export default function WorkspaceStageShell({
           </nav>
 
           <main className="space-y-4">
-            {currentStageId === "ingestion" ? (
-              // Ingestion stage owns its own goal visualisation via IntakeTicker —
-              // the shell only renders the section title here. The
-              // `alignment-status-indicator` test hook lives inside IntakeTicker.
-              <div className="pb-1">
-                <h2 className="font-display text-3xl font-semibold tracking-tight">
-                  {currentStage.name}
-                </h2>
-              </div>
-            ) : (
+            {currentStageId === "ingestion" || currentStageId === "alignment" ? null : (
               <div className="rounded-[24px] border border-black/5 bg-white/70 px-6 py-5 shadow-sm shadow-black/5 backdrop-blur">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -328,23 +316,6 @@ export default function WorkspaceStageShell({
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {currentStageId === "alignment" ? (
-                      <Badge
-                        variant="outline"
-                        className={cn(
-                          "border-black/10 bg-slate-50/70 font-mono text-[10px] tracking-[0.18em] uppercase",
-                          alignmentSummary.status === "running"
-                            ? "text-sky-600"
-                            : alignmentSummary.status === "completed"
-                              ? "text-emerald-700"
-                              : alignmentSummary.status === "failed"
-                                ? "text-rose-700"
-                                : "text-slate-500"
-                        )}
-                      >
-                        {alignmentStatusCopy.label}
-                      </Badge>
-                    ) : null}
                     <Badge
                       variant="outline"
                       className="border-black/10 bg-slate-50/70 font-mono text-[10px] tracking-[0.18em] text-slate-500 uppercase"

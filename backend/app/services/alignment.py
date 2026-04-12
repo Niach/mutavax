@@ -135,7 +135,7 @@ REFERENCE_SOURCES = {
         checksum_url=(
             "https://ftp.ensembl.org/pub/current_fasta/homo_sapiens/dna/CHECKSUMS"
         ),
-        checksum_type="cksum",
+        checksum_type="sum",
         checksum_filename="Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz",
     ),
     ReferencePreset.CANFAM4: ReferenceSourceSpec(
@@ -202,17 +202,26 @@ def artifact_download_path(workspace_id: str, artifact_id: str) -> str:
     return f"/api/workspaces/{workspace_id}/alignment/artifacts/{artifact_id}/download"
 
 
+def checksum_line_matches_filename(parts: list[str], filename: str) -> bool:
+    for token in parts[1:]:
+        if token.lstrip("*") == filename:
+            return True
+    return False
+
+
 def parse_remote_checksum(spec: ReferenceSourceSpec) -> str:
     with urlopen(spec.checksum_url, timeout=60) as response:
         text = response.read().decode("utf-8", "replace")
 
     for line in text.splitlines():
-        if spec.checksum_filename not in line:
+        parts = line.strip().split()
+        if not parts or not checksum_line_matches_filename(
+            parts, spec.checksum_filename
+        ):
             continue
         if spec.checksum_type == "md5":
-            return line.strip().split()[0]
-        parts = line.strip().split()
-        if len(parts) >= 2:
+            return parts[0]
+        if spec.checksum_type in {"sum", "cksum"} and len(parts) >= 2:
             return f"{parts[0]} {parts[1]}"
 
     raise RuntimeError(
@@ -226,10 +235,13 @@ def compute_local_checksum(path: Path, checksum_type: str) -> str:
         completed = subprocess.run(command, check=True, capture_output=True, text=True)
         return completed.stdout.strip().split()[0]
 
-    command = ["cksum", str(path)]
-    completed = subprocess.run(command, check=True, capture_output=True, text=True)
-    parts = completed.stdout.strip().split()
-    return f"{parts[0]} {parts[1]}"
+    if checksum_type in {"sum", "cksum"}:
+        command = [checksum_type, str(path)]
+        completed = subprocess.run(command, check=True, capture_output=True, text=True)
+        parts = completed.stdout.strip().split()
+        return f"{parts[0]} {parts[1]}"
+
+    raise ValueError(f"Unsupported checksum type: {checksum_type}")
 
 
 def ensure_download_verified(path: Path, spec: ReferenceSourceSpec) -> None:
@@ -237,7 +249,8 @@ def ensure_download_verified(path: Path, spec: ReferenceSourceSpec) -> None:
     actual = compute_local_checksum(path, spec.checksum_type)
     if actual != expected:
         raise RuntimeError(
-            f"Checksum mismatch for {path.name}. Expected {expected}, got {actual}."
+            "Reference download verification failed for "
+            f"{path.name}. Expected {expected}, got {actual}."
         )
 
 
@@ -264,6 +277,10 @@ def ensure_reference_indices(reference_path: Path) -> None:
         )
 
     if not bwa_index_exists(reference_path):
+        # Local import to avoid a service-layer import cycle.
+        from app.services.tool_preflight import verify_memory_for_bwa_mem2_index
+
+        verify_memory_for_bwa_mem2_index()
         subprocess.run(
             [bwa_binary, "index", str(reference_path)],
             check=True,

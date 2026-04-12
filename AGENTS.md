@@ -128,7 +128,7 @@ Frontend uses camelCase, backend uses snake_case. `src/lib/api.ts` handles the m
 - First-run reference bootstrap under the app-data directory; custom `REFERENCE_*_FASTA` overrides
 - Alignment artifact download (BAM / BAI / flagstat / idxstats / stats)
 - Desktop intake via Electron IPC bridge (`src/lib/desktop.ts` ↔ `electron/preload.cjs`)
-- Real-data smoke harness: `test_real_data_ingestion.py` + `tests/e2e/ingestion-real-data.spec.ts`
+- Real-data smoke harness: matched SEQC2 FASTQ smoke for ingestion plus opt-in live alignment smoke in `test_real_data_ingestion.py`, and desktop ingestion smoke in `tests/e2e/ingestion-real-data.spec.ts`
 
 **Planned:** Variant calling through AI review — these stages render `FutureStagePanel.tsx` placeholders and have no backend runner.
 
@@ -154,7 +154,7 @@ npm run lint
 ./.venv/bin/pytest backend/tests
 ```
 
-`npm run sample-data:alignment` expects a local `samtools` binary.
+`npm run sample-data:alignment` materializes a tiny BAM/CRAM normalization-only fixture and expects a local `samtools` binary.
 
 ## Agent Rules
 

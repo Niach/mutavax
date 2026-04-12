@@ -1,10 +1,13 @@
 import gzip
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +28,8 @@ from app.models.schemas import (
     ActiveStageUpdateRequest,
     AnalysisAssayType,
     FastqReadPreview,
+    IngestionLaneProgressResponse,
+    IngestionProgressPhase,
     IngestionLaneSummaryResponse,
     IngestionLanePreviewResponse,
     IngestionStatus,
@@ -60,6 +65,9 @@ FASTQ_SUFFIXES = COMPRESSED_FASTQ_SUFFIXES + (".fastq", ".fq")
 BAM_SUFFIXES = (".bam",)
 CRAM_SUFFIXES = (".cram",)
 PREVIEW_READ_LIMIT = 8
+STREAM_CHUNK_SIZE = 1024 * 1024
+PROGRESS_FLUSH_INTERVAL_SECONDS = 0.35
+PROGRESS_FLUSH_INTERVAL_BYTES = 4 * 1024 * 1024
 LANES = (SampleLane.TUMOR, SampleLane.NORMAL)
 
 
@@ -72,15 +80,40 @@ class LaneValidationResult:
     read_layout: Optional[ReadLayout] = None
 
 
+@dataclass(frozen=True)
+class SourceLaneFile:
+    id: str
+    filename: str
+    format: WorkspaceFileFormat
+    read_pair: ReadPair
+    size_bytes: int
+    path: Path
+
+
+@dataclass(frozen=True)
+class MaterializedLaneOutput:
+    read_pair: ReadPair
+    filename: str
+    path: Path
+    size_bytes: int
+    source_file_id: Optional[str]
+
+
+@dataclass(frozen=True)
+class NormalizationExecutionResult:
+    outputs: list[MaterializedLaneOutput]
+    uses_source_files_directly: bool = False
+
+
 class LanePreviewUnavailableError(RuntimeError):
     pass
 
 
 PAIRED_OUTPUT_REQUIRED_ISSUE = (
-    "Paired-end required. This lane must have canonical R1 and R2 before alignment."
+    "Paired-end required. This lane must have both R1 and R2 read mates before alignment."
 )
 ALIGNMENT_CONTAINER_PAIRED_OUTPUT_ISSUE = (
-    "Paired-end required. BAM/CRAM normalization did not produce both R1 and R2 FASTQ outputs."
+    "Paired-end required. BAM/CRAM normalization did not produce both R1 and R2 read mates."
 )
 
 
@@ -92,6 +125,164 @@ def isoformat(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat()
+
+
+def set_batch_progress_fields(
+    batch: IngestionBatchRecord,
+    *,
+    phase: Optional[IngestionProgressPhase],
+    current_filename: Optional[str] = None,
+    bytes_processed: Optional[int] = None,
+    total_bytes: Optional[int] = None,
+    throughput_bytes_per_sec: Optional[float] = None,
+    eta_seconds: Optional[float] = None,
+    percent: Optional[float] = None,
+) -> None:
+    batch.progress_phase = phase.value if phase is not None else None
+    batch.progress_current_filename = current_filename
+    batch.progress_bytes_processed = bytes_processed
+    batch.progress_total_bytes = total_bytes
+    batch.progress_throughput_bytes_per_sec = throughput_bytes_per_sec
+    batch.progress_eta_seconds = eta_seconds
+    batch.progress_percent = percent
+
+
+def clear_batch_progress_fields(batch: IngestionBatchRecord) -> None:
+    set_batch_progress_fields(batch, phase=None)
+
+
+def serialize_batch_progress(
+    batch: IngestionBatchRecord,
+) -> Optional[IngestionLaneProgressResponse]:
+    if not batch.progress_phase:
+        return None
+
+    return IngestionLaneProgressResponse(
+        phase=IngestionProgressPhase(batch.progress_phase),
+        current_filename=batch.progress_current_filename,
+        bytes_processed=batch.progress_bytes_processed,
+        total_bytes=batch.progress_total_bytes,
+        throughput_bytes_per_sec=batch.progress_throughput_bytes_per_sec,
+        eta_seconds=batch.progress_eta_seconds,
+        percent=batch.progress_percent,
+    )
+
+
+def persist_batch_progress(
+    workspace_id: str,
+    batch_id: str,
+    *,
+    phase: IngestionProgressPhase,
+    current_filename: Optional[str] = None,
+    bytes_processed: Optional[int] = None,
+    total_bytes: Optional[int] = None,
+    throughput_bytes_per_sec: Optional[float] = None,
+    eta_seconds: Optional[float] = None,
+    percent: Optional[float] = None,
+) -> None:
+    with session_scope() as session:
+        batch = get_batch_record(session, workspace_id, batch_id)
+        set_batch_progress_fields(
+            batch,
+            phase=phase,
+            current_filename=current_filename,
+            bytes_processed=bytes_processed,
+            total_bytes=total_bytes,
+            throughput_bytes_per_sec=throughput_bytes_per_sec,
+            eta_seconds=eta_seconds,
+            percent=percent,
+        )
+        batch.updated_at = utc_now()
+        batch.workspace.updated_at = batch.updated_at
+        session.add(batch)
+
+
+class ProgressReporter:
+    def __init__(
+        self,
+        *,
+        workspace_id: str,
+        batch_id: str,
+        total_bytes: Optional[int],
+        numeric_progress: bool,
+    ) -> None:
+        self.workspace_id = workspace_id
+        self.batch_id = batch_id
+        self.total_bytes = total_bytes
+        self.numeric_progress = numeric_progress and total_bytes is not None
+        self.bytes_processed = 0 if self.numeric_progress else None
+        self.phase = IngestionProgressPhase.VALIDATING
+        self.current_filename: Optional[str] = None
+        self.started_at = time.monotonic()
+        self.last_flush_at = 0.0
+        self.last_flushed_bytes = 0
+
+    def set_phase(
+        self,
+        phase: IngestionProgressPhase,
+        current_filename: Optional[str] = None,
+    ) -> None:
+        self.phase = phase
+        if current_filename is not None:
+            self.current_filename = current_filename
+        self.flush(force=True)
+
+    def advance(self, amount: int, *, current_filename: Optional[str] = None) -> None:
+        if not self.numeric_progress or amount <= 0:
+            return
+        if current_filename is not None:
+            self.current_filename = current_filename
+        self.bytes_processed = min(
+            self.total_bytes or 0,
+            (self.bytes_processed or 0) + amount,
+        )
+        self.flush()
+
+    def mark_complete(self, *, current_filename: Optional[str] = None) -> None:
+        if current_filename is not None:
+            self.current_filename = current_filename
+        if self.numeric_progress and self.total_bytes is not None:
+            self.bytes_processed = self.total_bytes
+        self.flush(force=True)
+
+    def flush(self, *, force: bool = False) -> None:
+        if (
+            not force
+            and time.monotonic() - self.last_flush_at < PROGRESS_FLUSH_INTERVAL_SECONDS
+            and abs((self.bytes_processed or 0) - self.last_flushed_bytes)
+            < PROGRESS_FLUSH_INTERVAL_BYTES
+        ):
+            return
+
+        throughput_bytes_per_sec: Optional[float] = None
+        eta_seconds: Optional[float] = None
+        percent: Optional[float] = None
+
+        if self.numeric_progress and self.total_bytes is not None:
+            elapsed = max(time.monotonic() - self.started_at, 0.001)
+            processed = self.bytes_processed or 0
+            throughput_bytes_per_sec = processed / elapsed if processed > 0 else None
+            remaining = max(self.total_bytes - processed, 0)
+            eta_seconds = (
+                remaining / throughput_bytes_per_sec
+                if throughput_bytes_per_sec and remaining > 0
+                else 0.0 if remaining == 0 else None
+            )
+            percent = round((processed / self.total_bytes) * 100, 2)
+
+        persist_batch_progress(
+            self.workspace_id,
+            self.batch_id,
+            phase=self.phase,
+            current_filename=self.current_filename,
+            bytes_processed=self.bytes_processed if self.numeric_progress else None,
+            total_bytes=self.total_bytes,
+            throughput_bytes_per_sec=throughput_bytes_per_sec,
+            eta_seconds=eta_seconds,
+            percent=percent,
+        )
+        self.last_flush_at = time.monotonic()
+        self.last_flushed_bytes = self.bytes_processed or 0
 
 
 def default_reference_preset_for_species(species: str) -> ReferencePreset:
@@ -195,6 +386,29 @@ def is_compressed_fastq(filename: str) -> bool:
     return filename.lower().endswith(COMPRESSED_FASTQ_SUFFIXES)
 
 
+def resolve_pigz_command() -> list[str]:
+    configured = os.getenv("PIGZ_BINARY")
+    if configured:
+        return shlex.split(configured)
+
+    if shutil.which("pigz"):
+        return ["pigz"]
+
+    raise RuntimeError("pigz was not found locally. Install pigz or set PIGZ_BINARY.")
+
+
+def resolve_pigz_threads() -> int:
+    configured = os.getenv("PIGZ_THREADS")
+    if configured:
+        try:
+            return max(1, int(configured))
+        except ValueError as error:
+            raise RuntimeError(f"Invalid PIGZ_THREADS value: {configured}") from error
+
+    cpu_count = os.cpu_count() or 2
+    return max(1, cpu_count - 1)
+
+
 def strip_known_suffix(filename: str) -> str:
     lowered = filename.lower()
     for suffix in FASTQ_SUFFIXES + BAM_SUFFIXES + CRAM_SUFFIXES:
@@ -293,6 +507,67 @@ def issues_from_error_text(error_text: Optional[str]) -> list[str]:
     return [item.strip() for item in error_text.split(" | ") if item.strip()]
 
 
+def source_files_for_batch(batch: IngestionBatchRecord) -> list[WorkspaceFileRecord]:
+    return [
+        file
+        for file in batch.files
+        if file.file_role == WorkspaceFileRole.SOURCE.value
+    ]
+
+
+def source_lane_file_from_record(record: WorkspaceFileRecord) -> SourceLaneFile:
+    return SourceLaneFile(
+        id=record.id,
+        filename=record.filename,
+        format=WorkspaceFileFormat(record.format),
+        read_pair=ReadPair(record.read_pair),
+        size_bytes=record.size_bytes,
+        path=workspace_file_access_path(record),
+    )
+
+
+def ready_physical_canonical_files_for_batch(
+    batch: IngestionBatchRecord,
+) -> dict[ReadPair, WorkspaceFileRecord]:
+    return {
+        ReadPair(file.read_pair): file
+        for file in batch.files
+        if file.file_role == WorkspaceFileRole.CANONICAL.value
+        and file.status == WorkspaceFileStatus.READY.value
+        and ReadPair(file.read_pair) in {ReadPair.R1, ReadPair.R2, ReadPair.SE}
+    }
+
+
+def ready_direct_source_fastq_files_for_batch(
+    batch: IngestionBatchRecord,
+) -> dict[ReadPair, WorkspaceFileRecord]:
+    source_files = [
+        file
+        for file in source_files_for_batch(batch)
+        if file.status == WorkspaceFileStatus.READY.value
+    ]
+    validation = validate_lane_files(source_files)
+    if validation.blocking_issues or validation.file_format != WorkspaceFileFormat.FASTQ:
+        return {}
+
+    if validation.read_layout == ReadLayout.PAIRED:
+        if len(source_files) != 2 or any(not is_compressed_fastq(file.filename) for file in source_files):
+            return {}
+        pairs = {
+            ReadPair(file.read_pair): file
+            for file in source_files
+            if ReadPair(file.read_pair) in {ReadPair.R1, ReadPair.R2}
+        }
+        return pairs if set(pairs) == {ReadPair.R1, ReadPair.R2} else {}
+
+    if validation.read_layout == ReadLayout.SINGLE:
+        if len(source_files) != 1 or not is_compressed_fastq(source_files[0].filename):
+            return {}
+        return {ReadPair.SE: source_files[0]}
+
+    return {}
+
+
 def validate_lane_files(files: Iterable[WorkspaceFileRecord]) -> LaneValidationResult:
     file_list = list(files)
     if not file_list:
@@ -388,22 +663,23 @@ def validate_lane_files(files: Iterable[WorkspaceFileRecord]) -> LaneValidationR
     )
 
 
+def effective_canonical_files_for_batch(
+    batch: IngestionBatchRecord,
+) -> dict[ReadPair, WorkspaceFileRecord]:
+    physical_canonical = ready_physical_canonical_files_for_batch(batch)
+    if physical_canonical:
+        return physical_canonical
+    return ready_direct_source_fastq_files_for_batch(batch)
+
+
 def summarize_batch(batch: Optional[IngestionBatchRecord], sample_lane: SampleLane) -> IngestionLaneSummaryResponse:
     if batch is None:
         return IngestionLaneSummaryResponse(sample_lane=sample_lane)
 
-    source_files = [
-        file
-        for file in batch.files
-        if file.file_role == WorkspaceFileRole.SOURCE.value
-    ]
-    canonical_files = [
-        file
-        for file in batch.files
-        if file.file_role == WorkspaceFileRole.CANONICAL.value
-        and file.status == WorkspaceFileStatus.READY.value
-    ]
-    ready_pairs = {ReadPair(file.read_pair) for file in canonical_files}
+    source_files = source_files_for_batch(batch)
+    physical_canonical_files = ready_physical_canonical_files_for_batch(batch)
+    effective_canonical_files = effective_canonical_files_for_batch(batch)
+    ready_pairs = set(effective_canonical_files)
 
     read_layout: Optional[ReadLayout] = None
     if ReadPair.R1 in ready_pairs or ReadPair.R2 in ready_pairs:
@@ -415,7 +691,7 @@ def summarize_batch(batch: Optional[IngestionBatchRecord], sample_lane: SampleLa
         read_layout = source_validation.read_layout
 
     missing_pairs: list[ReadPair] = []
-    if canonical_files:
+    if effective_canonical_files:
         if ReadPair.R1 not in ready_pairs:
             missing_pairs.append(ReadPair.R1)
         if ReadPair.R2 not in ready_pairs:
@@ -432,7 +708,7 @@ def summarize_batch(batch: Optional[IngestionBatchRecord], sample_lane: SampleLa
     has_paired_outputs = ready_pairs >= {ReadPair.R1, ReadPair.R2}
     has_stale_single_output = ReadPair.SE in ready_pairs and not has_paired_outputs
 
-    if canonical_files and not has_paired_outputs:
+    if physical_canonical_files and not has_paired_outputs:
         status = IngestionStatus.FAILED
         issue = (
             ALIGNMENT_CONTAINER_PAIRED_OUTPUT_ISSUE
@@ -457,11 +733,12 @@ def summarize_batch(batch: Optional[IngestionBatchRecord], sample_lane: SampleLa
         status=status,
         ready_for_alignment=ready_for_alignment,
         source_file_count=len(source_files),
-        canonical_file_count=len(canonical_files),
+        canonical_file_count=len(effective_canonical_files),
         missing_pairs=missing_pairs,
         blocking_issues=blocking_issues,
         read_layout=read_layout,
         updated_at=isoformat(batch.updated_at),
+        progress=serialize_batch_progress(batch),
     )
 
 
@@ -500,13 +777,7 @@ def summarize_workspace_ingestion(workspace: WorkspaceRecord) -> IngestionSummar
 def ready_canonical_files_for_batch(
     batch: IngestionBatchRecord,
 ) -> dict[ReadPair, WorkspaceFileRecord]:
-    return {
-        ReadPair(file.read_pair): file
-        for file in batch.files
-        if file.file_role == WorkspaceFileRole.CANONICAL.value
-        and file.status == WorkspaceFileStatus.READY.value
-        and ReadPair(file.read_pair) in {ReadPair.R1, ReadPair.R2, ReadPair.SE}
-    }
+    return effective_canonical_files_for_batch(batch)
 
 
 def build_fastq_read_preview(header: str, sequence: str, quality: str) -> FastqReadPreview:
@@ -544,7 +815,7 @@ def sample_canonical_fastq_reads(source_file: WorkspaceFileRecord) -> list[Fastq
                 quality = text_stream.readline()
                 if not sequence or not separator or not quality:
                     raise ValueError(
-                        f"Malformed canonical FASTQ preview for {source_file.filename}: incomplete record."
+                        f"Malformed sequence preview for {source_file.filename}: incomplete record."
                     )
 
                 header = header.rstrip("\r\n")
@@ -554,15 +825,15 @@ def sample_canonical_fastq_reads(source_file: WorkspaceFileRecord) -> list[Fastq
 
                 if not header.startswith("@"):
                     raise ValueError(
-                        f"Malformed canonical FASTQ preview for {source_file.filename}: invalid header."
+                        f"Malformed sequence preview for {source_file.filename}: invalid header."
                     )
                 if not separator.startswith("+"):
                     raise ValueError(
-                        f"Malformed canonical FASTQ preview for {source_file.filename}: missing separator."
+                        f"Malformed sequence preview for {source_file.filename}: missing separator."
                     )
                 if len(sequence) != len(quality):
                     raise ValueError(
-                        f"Malformed canonical FASTQ preview for {source_file.filename}: sequence and quality lengths differ."
+                        f"Malformed sequence preview for {source_file.filename}: sequence and quality lengths differ."
                     )
 
                 reads.append(build_fastq_read_preview(header, sequence, quality))
@@ -572,11 +843,11 @@ def sample_canonical_fastq_reads(source_file: WorkspaceFileRecord) -> list[Fastq
         raise
     except UnicodeDecodeError as error:
         raise ValueError(
-            f"Unable to decode canonical FASTQ preview for {source_file.filename}: {error}"
+            f"Unable to decode sequence preview for {source_file.filename}: {error}"
         ) from error
     except OSError as error:
         raise ValueError(
-            f"Unable to read canonical FASTQ preview for {source_file.filename}: {error}"
+            f"Unable to read sequence preview for {source_file.filename}: {error}"
         ) from error
 
 
@@ -616,7 +887,7 @@ def load_ingestion_lane_preview(
         lane_summary = summarize_workspace_ingestion(workspace).lanes[sample_lane]
         if lane_summary.status != IngestionStatus.READY or not lane_summary.active_batch_id:
             raise LanePreviewUnavailableError(
-                "Sequence preview becomes available after canonical FASTQ is ready."
+                "Sequence preview becomes available after the lane is ready."
             )
 
         batch = get_batch_record(session, workspace_id, lane_summary.active_batch_id)
@@ -635,7 +906,7 @@ def load_ingestion_lane_preview(
             }
         else:
             raise FileNotFoundError(
-                "Canonical FASTQ preview requires ready canonical files for "
+                "Sequence preview requires ready lane inputs for "
                 f"{sample_lane.value} lane."
             )
 
@@ -879,11 +1150,7 @@ def create_canonical_record(
 
 
 def batch_status_from_files(batch: IngestionBatchRecord) -> IngestionStatus:
-    source_files = [
-        file
-        for file in batch.files
-        if file.file_role == WorkspaceFileRole.SOURCE.value
-    ]
+    source_files = source_files_for_batch(batch)
     canonical_files = [
         file
         for file in batch.files
@@ -895,15 +1162,13 @@ def batch_status_from_files(batch: IngestionBatchRecord) -> IngestionStatus:
     if batch.error or any(file.status == WorkspaceFileStatus.FAILED.value for file in source_files):
         return IngestionStatus.FAILED
 
-    ready_pairs = {
-        ReadPair(file.read_pair)
-        for file in canonical_files
-        if file.status == WorkspaceFileStatus.READY.value
-    }
+    ready_pairs = set(effective_canonical_files_for_batch(batch))
     if ready_pairs >= {ReadPair.R1, ReadPair.R2}:
         return IngestionStatus.READY
     if any(file.status == WorkspaceFileStatus.NORMALIZING.value for file in source_files):
         return IngestionStatus.NORMALIZING
+    if any(file.status == WorkspaceFileStatus.READY.value for file in canonical_files):
+        return IngestionStatus.FAILED
     return IngestionStatus.UPLOADED
 
 
@@ -918,6 +1183,7 @@ def mark_batch_failed(workspace_id: str, batch_id: str, error_message: str) -> N
         batch = get_batch_record(session, workspace_id, batch_id)
         batch.error = error_message
         batch.status = IngestionStatus.FAILED.value
+        clear_batch_progress_fields(batch)
         batch.updated_at = utc_now()
         batch.workspace.updated_at = batch.updated_at
         for file in batch.files:
@@ -980,15 +1246,273 @@ def reset_workspace_ingestion(workspace_id: str) -> WorkspaceResponse:
     return response
 
 
+def grouped_fastq_source_files(
+    source_files: list[SourceLaneFile],
+    read_layout: ReadLayout,
+) -> dict[ReadPair, list[SourceLaneFile]]:
+    if read_layout == ReadLayout.SINGLE:
+        return {
+            ReadPair.SE: sorted(
+                source_files,
+                key=lambda item: item.filename.lower(),
+            )
+        }
+
+    return {
+        ReadPair.R1: sorted(
+            [
+                file
+                for file in source_files
+                if file.read_pair == ReadPair.R1
+            ],
+            key=lambda item: item.filename.lower(),
+        ),
+        ReadPair.R2: sorted(
+            [
+                file
+                for file in source_files
+                if file.read_pair == ReadPair.R2
+            ],
+            key=lambda item: item.filename.lower(),
+        ),
+    }
+
+
+def should_reference_fastq_sources_directly(
+    grouped_files: dict[ReadPair, list[SourceLaneFile]],
+) -> bool:
+    if not grouped_files:
+        return False
+
+    return all(
+        len(files) == 1 and is_compressed_fastq(files[0].filename)
+        for files in grouped_files.values()
+        if files
+    )
+
+
+def temporary_destination_path(final_path: Path) -> Path:
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    return final_path.with_name(f".{final_path.name}.{uuid.uuid4().hex}.tmp")
+
+
+def ordered_read_pairs(
+    grouped_files: dict[ReadPair, list[SourceLaneFile]],
+) -> list[tuple[ReadPair, list[SourceLaneFile]]]:
+    return [
+        (read_pair, grouped_files[read_pair])
+        for read_pair in (ReadPair.R1, ReadPair.R2, ReadPair.SE)
+        if grouped_files.get(read_pair)
+    ]
+
+
+def iter_fastq_payload_chunks(
+    source_file: SourceLaneFile,
+    reporter: ProgressReporter,
+):
+    with source_file.path.open("rb") as source_handle:
+        if is_compressed_fastq(source_file.filename):
+            decompressor = zlib.decompressobj(wbits=31)
+            while raw_chunk := source_handle.read(STREAM_CHUNK_SIZE):
+                reporter.advance(len(raw_chunk), current_filename=source_file.filename)
+                pending = raw_chunk
+                while pending:
+                    decoded = decompressor.decompress(pending)
+                    if decoded:
+                        yield decoded
+                    if decompressor.unused_data:
+                        trailing = decompressor.flush()
+                        if trailing:
+                            yield trailing
+                        pending = decompressor.unused_data
+                        decompressor = zlib.decompressobj(wbits=31)
+                        continue
+                    pending = b""
+
+            remaining = decompressor.flush()
+            if remaining:
+                yield remaining
+            return
+
+        while raw_chunk := source_handle.read(STREAM_CHUNK_SIZE):
+            reporter.advance(len(raw_chunk), current_filename=source_file.filename)
+            yield raw_chunk
+
+
+def concatenate_gzip_members(
+    source_files: list[SourceLaneFile],
+    final_path: Path,
+    reporter: ProgressReporter,
+) -> int:
+    temp_path = temporary_destination_path(final_path)
+    try:
+        with temp_path.open("wb") as destination_handle:
+            for source_file in source_files:
+                with source_file.path.open("rb") as source_handle:
+                    while chunk := source_handle.read(STREAM_CHUNK_SIZE):
+                        destination_handle.write(chunk)
+                        reporter.advance(len(chunk), current_filename=source_file.filename)
+
+        os.replace(temp_path, final_path)
+        return final_path.stat().st_size
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def compress_fastq_sources_to_gzip(
+    source_files: list[SourceLaneFile],
+    final_path: Path,
+    reporter: ProgressReporter,
+) -> int:
+    temp_path = temporary_destination_path(final_path)
+    command = [
+        *resolve_pigz_command(),
+        "-p",
+        str(resolve_pigz_threads()),
+        "-c",
+    ]
+    process: Optional[subprocess.Popen[bytes]] = None
+
+    try:
+        with temp_path.open("wb") as destination_handle:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=destination_handle,
+                stderr=subprocess.PIPE,
+            )
+            if process.stdin is None:
+                raise RuntimeError("pigz did not provide a writable stdin stream.")
+
+            for source_file in source_files:
+                for chunk in iter_fastq_payload_chunks(source_file, reporter):
+                    process.stdin.write(chunk)
+
+            process.stdin.close()
+            stderr_output = (
+                process.stderr.read().decode("utf-8", "replace")
+                if process.stderr is not None
+                else ""
+            )
+            return_code = process.wait()
+            if process.stderr is not None:
+                process.stderr.close()
+
+            if return_code != 0:
+                raise RuntimeError(
+                    stderr_output.strip()
+                    or f"pigz failed while writing {final_path.name}."
+                )
+
+        os.replace(temp_path, final_path)
+        return final_path.stat().st_size
+    except Exception:
+        if process is not None:
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if process.stderr is not None and not process.stderr.closed:
+                process.stderr.read()
+                process.stderr.close()
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def execute_fastq_normalization(
+    *,
+    workspace_id: str,
+    batch_id: str,
+    sample_lane: SampleLane,
+    source_files: list[SourceLaneFile],
+    read_layout: ReadLayout,
+    reporter: ProgressReporter,
+) -> NormalizationExecutionResult:
+    grouped_files = grouped_fastq_source_files(source_files, read_layout)
+    ordered_groups = ordered_read_pairs(grouped_files)
+
+    if should_reference_fastq_sources_directly(grouped_files):
+        reporter.set_phase(
+            IngestionProgressPhase.REFERENCING,
+            current_filename=ordered_groups[0][1][0].filename,
+        )
+        for _, files in ordered_groups:
+            for source_file in files:
+                reporter.advance(source_file.size_bytes, current_filename=source_file.filename)
+        reporter.set_phase(
+            IngestionProgressPhase.FINALIZING,
+            current_filename=ordered_groups[-1][1][-1].filename,
+        )
+        reporter.mark_complete(current_filename=ordered_groups[-1][1][-1].filename)
+        return NormalizationExecutionResult(
+            outputs=[],
+            uses_source_files_directly=True,
+        )
+
+    created_paths: list[Path] = []
+    outputs: list[MaterializedLaneOutput] = []
+
+    try:
+        for read_pair, read_pair_files in ordered_groups:
+            canonical_filename = build_canonical_filename(sample_lane, read_pair)
+            final_path = canonical_destination_path(workspace_id, batch_id, canonical_filename)
+
+            if all(is_compressed_fastq(file.filename) for file in read_pair_files):
+                reporter.set_phase(
+                    IngestionProgressPhase.CONCATENATING,
+                    current_filename=read_pair_files[0].filename,
+                )
+                output_size = concatenate_gzip_members(
+                    read_pair_files,
+                    final_path,
+                    reporter,
+                )
+            else:
+                reporter.set_phase(
+                    IngestionProgressPhase.COMPRESSING,
+                    current_filename=read_pair_files[0].filename,
+                )
+                output_size = compress_fastq_sources_to_gzip(
+                    read_pair_files,
+                    final_path,
+                    reporter,
+                )
+
+            created_paths.append(final_path)
+            outputs.append(
+                MaterializedLaneOutput(
+                    read_pair=read_pair,
+                    filename=canonical_filename,
+                    path=final_path,
+                    size_bytes=output_size,
+                    source_file_id=read_pair_files[0].id,
+                )
+            )
+
+        reporter.set_phase(
+            IngestionProgressPhase.FINALIZING,
+            current_filename=outputs[-1].filename if outputs else None,
+        )
+        reporter.mark_complete(current_filename=outputs[-1].filename if outputs else None)
+        return NormalizationExecutionResult(outputs=outputs)
+    except Exception:
+        for path in created_paths:
+            path.unlink(missing_ok=True)
+        raise
+
+
 def run_samtools_fastq(
     source_path: Path,
     r1_path: Path,
     r2_path: Path,
     se_path: Path,
+    working_dir: Path,
     is_cram: bool,
 ) -> None:
     reference_path = os.getenv("SAMTOOLS_REFERENCE_FASTA")
-    collated_path = source_path.parent / f"{source_path.name}.collated.bam"
+    collated_path = working_dir / f"{source_path.stem}.collated.bam"
 
     collate_command = [
         "samtools",
@@ -1020,72 +1544,16 @@ def run_samtools_fastq(
     subprocess.run(command, check=True, capture_output=True, text=True)
 
 
-def merge_fastq_lane(
-    session,
-    *,
-    workspace: WorkspaceRecord,
-    batch: IngestionBatchRecord,
-    source_files: list[WorkspaceFileRecord],
-    temp_dir: Path,
-    read_layout: ReadLayout,
-) -> None:
-    if read_layout == ReadLayout.SINGLE:
-        grouped_files: dict[ReadPair, list[WorkspaceFileRecord]] = {
-            ReadPair.SE: sorted(source_files, key=lambda item: item.filename.lower()),
-        }
-    else:
-        grouped_files = {
-            ReadPair.R1: sorted(
-                [file for file in source_files if ReadPair(file.read_pair) == ReadPair.R1],
-                key=lambda item: item.filename.lower(),
-            ),
-            ReadPair.R2: sorted(
-                [file for file in source_files if ReadPair(file.read_pair) == ReadPair.R2],
-                key=lambda item: item.filename.lower(),
-            ),
-        }
-
-    for read_pair, read_pair_files in grouped_files.items():
-        if not read_pair_files:
-            continue
-        canonical_filename = build_canonical_filename(SampleLane(batch.sample_lane), read_pair)
-        canonical_path = temp_dir / canonical_filename
-        with gzip.open(canonical_path, "wb") as destination_handle:
-            for source_file in read_pair_files:
-                source_path = workspace_file_access_path(source_file)
-                open_source = gzip.open if is_compressed_fastq(source_file.filename) else open
-                with open_source(source_path, "rb") as source_handle:
-                    shutil.copyfileobj(source_handle, destination_handle)
-
-        final_path = canonical_destination_path(workspace.id, batch.id, canonical_filename)
-        final_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(canonical_path, final_path)
-        create_canonical_record(
-            session,
-            workspace=workspace,
-            batch=batch,
-            source_file_id=read_pair_files[0].id,
-            filename=canonical_filename,
-            read_pair=read_pair,
-            size_bytes=final_path.stat().st_size,
-            local_path=str(final_path),
-        )
-
-    for source_file in source_files:
-        source_file.status = WorkspaceFileStatus.READY.value
-        source_file.error = None
-        session.add(source_file)
-
-
 def normalize_alignment_container(
-    session,
     *,
-    workspace: WorkspaceRecord,
-    batch: IngestionBatchRecord,
-    source_file: WorkspaceFileRecord,
+    workspace_id: str,
+    batch_id: str,
+    sample_lane: SampleLane,
+    source_file: SourceLaneFile,
     temp_dir: Path,
-) -> None:
-    source_path = workspace_file_access_path(source_file)
+    reporter: ProgressReporter,
+) -> NormalizationExecutionResult:
+    source_path = source_file.path
 
     r1_fastq_path = temp_dir / f"{source_file.id}-R1.fastq"
     r2_fastq_path = temp_dir / f"{source_file.id}-R2.fastq"
@@ -1095,7 +1563,8 @@ def normalize_alignment_container(
         r1_fastq_path,
         r2_fastq_path,
         se_fastq_path,
-        is_cram=source_file.format == WorkspaceFileFormat.CRAM.value,
+        temp_dir,
+        is_cram=source_file.format == WorkspaceFileFormat.CRAM,
     )
 
     def non_empty(path: Path) -> bool:
@@ -1103,7 +1572,6 @@ def normalize_alignment_container(
 
     r1_ok = non_empty(r1_fastq_path)
     r2_ok = non_empty(r2_fastq_path)
-    se_ok = non_empty(se_fastq_path)
 
     if r1_ok and r2_ok:
         outputs: list[tuple[ReadPair, Path]] = [
@@ -1113,77 +1581,193 @@ def normalize_alignment_container(
     else:
         raise RuntimeError(ALIGNMENT_CONTAINER_PAIRED_OUTPUT_ISSUE)
 
-    for read_pair, plain_path in outputs:
-        canonical_filename = build_canonical_filename(SampleLane(batch.sample_lane), read_pair)
-        canonical_path = temp_dir / canonical_filename
-        with plain_path.open("rb") as source_handle, gzip.open(canonical_path, "wb") as destination_handle:
-            shutil.copyfileobj(source_handle, destination_handle)
-        final_path = canonical_destination_path(workspace.id, batch.id, canonical_filename)
-        final_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(canonical_path, final_path)
-        create_canonical_record(
-            session,
-            workspace=workspace,
-            batch=batch,
-            source_file_id=source_file.id,
-            filename=canonical_filename,
-            read_pair=read_pair,
-            size_bytes=final_path.stat().st_size,
-            local_path=str(final_path),
-        )
+    created_paths: list[Path] = []
+    materialized_outputs: list[MaterializedLaneOutput] = []
 
-    source_file.status = WorkspaceFileStatus.READY.value
-    source_file.error = None
-    session.add(source_file)
+    try:
+        for read_pair, plain_path in outputs:
+            canonical_filename = build_canonical_filename(
+                sample_lane,
+                read_pair,
+            )
+            final_path = canonical_destination_path(workspace_id, batch_id, canonical_filename)
+            reporter.set_phase(
+                IngestionProgressPhase.COMPRESSING,
+                current_filename=canonical_filename,
+            )
+            materialized_size = compress_fastq_sources_to_gzip(
+                [
+                    SourceLaneFile(
+                        id=source_file.id,
+                        filename=plain_path.name,
+                        format=WorkspaceFileFormat.FASTQ,
+                        read_pair=read_pair,
+                        size_bytes=plain_path.stat().st_size,
+                        path=plain_path,
+                    )
+                ],
+                final_path,
+                reporter,
+            )
+            created_paths.append(final_path)
+            materialized_outputs.append(
+                MaterializedLaneOutput(
+                    read_pair=read_pair,
+                    filename=canonical_filename,
+                    path=final_path,
+                    size_bytes=materialized_size,
+                    source_file_id=source_file.id,
+                )
+            )
+
+        reporter.set_phase(
+            IngestionProgressPhase.FINALIZING,
+            current_filename=materialized_outputs[-1].filename if materialized_outputs else None,
+        )
+        reporter.mark_complete(
+            current_filename=materialized_outputs[-1].filename if materialized_outputs else None
+        )
+        return NormalizationExecutionResult(outputs=materialized_outputs)
+    except Exception:
+        for path in created_paths:
+            path.unlink(missing_ok=True)
+        raise
 
 
 def run_batch_normalization(workspace_id: str, batch_id: str) -> WorkspaceResponse:
+    execution_result: Optional[NormalizationExecutionResult] = None
+    validation: Optional[LaneValidationResult] = None
+    source_lane_files: list[SourceLaneFile] = []
+    sample_lane: Optional[SampleLane] = None
+    reporter: Optional[ProgressReporter] = None
+
     try:
         with session_scope() as session:
             batch = get_batch_record(session, workspace_id, batch_id)
             workspace = batch.workspace
             batch.error = None
             batch.status = IngestionStatus.NORMALIZING.value
+            set_batch_progress_fields(
+                batch,
+                phase=IngestionProgressPhase.VALIDATING,
+            )
             batch.updated_at = utc_now()
             workspace.updated_at = batch.updated_at
-            session.add(batch)
 
-            source_files = [
-                file for file in batch.files if file.file_role == WorkspaceFileRole.SOURCE.value
-            ]
+            source_records = source_files_for_batch(batch)
+            for source_record in source_records:
+                source_record.status = WorkspaceFileStatus.NORMALIZING.value
+                source_record.error = None
+                session.add(source_record)
 
-            validation = validate_lane_files(source_files)
+            validation = validate_lane_files(source_records)
             if validation.blocking_issues:
                 raise RuntimeError(" | ".join(validation.blocking_issues))
 
-            with tempfile.TemporaryDirectory(prefix=f"workspace-batch-{batch.id}-") as temp_dir_name:
-                temp_dir = Path(temp_dir_name)
-                if validation.file_format == WorkspaceFileFormat.FASTQ:
-                    merge_fastq_lane(
-                        session,
-                        workspace=workspace,
-                        batch=batch,
-                        source_files=source_files,
-                        temp_dir=temp_dir,
-                        read_layout=validation.read_layout or ReadLayout.PAIRED,
-                    )
-                elif validation.file_format in {WorkspaceFileFormat.BAM, WorkspaceFileFormat.CRAM}:
-                    normalize_alignment_container(
-                        session,
-                        workspace=workspace,
-                        batch=batch,
-                        source_file=source_files[0],
-                        temp_dir=temp_dir,
-                    )
-                else:
-                    raise RuntimeError("Unsupported lane format")
+            source_lane_files = [
+                source_lane_file_from_record(source_record)
+                for source_record in source_records
+            ]
+            sample_lane = SampleLane(batch.sample_lane)
+            batch.sample_stem = validation.sample_stem
+            session.add(batch)
 
+        reporter = ProgressReporter(
+            workspace_id=workspace_id,
+            batch_id=batch_id,
+            total_bytes=(
+                sum(source_file.size_bytes for source_file in source_lane_files)
+                if validation and validation.file_format == WorkspaceFileFormat.FASTQ
+                else None
+            ),
+            numeric_progress=bool(
+                validation and validation.file_format == WorkspaceFileFormat.FASTQ
+            ),
+        )
+        reporter.set_phase(IngestionProgressPhase.VALIDATING)
+
+        with tempfile.TemporaryDirectory(prefix=f"workspace-batch-{batch_id}-") as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            if validation is None or sample_lane is None:
+                raise RuntimeError("Batch validation did not complete.")
+
+            if validation.file_format == WorkspaceFileFormat.FASTQ:
+                execution_result = execute_fastq_normalization(
+                    workspace_id=workspace_id,
+                    batch_id=batch_id,
+                    sample_lane=sample_lane,
+                    source_files=source_lane_files,
+                    read_layout=validation.read_layout or ReadLayout.PAIRED,
+                    reporter=reporter,
+                )
+            elif validation.file_format in {
+                WorkspaceFileFormat.BAM,
+                WorkspaceFileFormat.CRAM,
+            }:
+                if not source_lane_files:
+                    raise RuntimeError("Missing alignment-container source file.")
+                reporter.set_phase(
+                    IngestionProgressPhase.EXTRACTING,
+                    current_filename=source_lane_files[0].filename,
+                )
+                execution_result = normalize_alignment_container(
+                    workspace_id=workspace_id,
+                    batch_id=batch_id,
+                    sample_lane=sample_lane,
+                    source_file=source_lane_files[0],
+                    temp_dir=temp_dir,
+                    reporter=reporter,
+                )
+            else:
+                raise RuntimeError("Unsupported lane format")
+
+        with session_scope() as session:
+            batch = get_batch_record(session, workspace_id, batch_id)
+            workspace = batch.workspace
+            batch.error = None
+            batch.sample_stem = validation.sample_stem if validation else batch.sample_stem
+
+            for source_record in source_files_for_batch(batch):
+                source_record.status = WorkspaceFileStatus.READY.value
+                source_record.error = None
+                session.add(source_record)
+
+            for output in execution_result.outputs if execution_result else []:
+                create_canonical_record(
+                    session,
+                    workspace=workspace,
+                    batch=batch,
+                    source_file_id=output.source_file_id,
+                    filename=output.filename,
+                    read_pair=output.read_pair,
+                    size_bytes=output.size_bytes,
+                    local_path=str(output.path),
+                )
+
+            clear_batch_progress_fields(batch)
             refresh_batch_status(batch)
             session.add(batch)
             session.flush()
             return serialize_workspace(workspace)
     except Exception as error:
+        if execution_result is not None:
+            for output in execution_result.outputs:
+                output.path.unlink(missing_ok=True)
+        if reporter is not None:
+            persist_batch_progress(
+                workspace_id,
+                batch_id,
+                phase=reporter.phase,
+                current_filename=reporter.current_filename,
+                bytes_processed=reporter.bytes_processed,
+                total_bytes=reporter.total_bytes,
+                throughput_bytes_per_sec=None,
+                eta_seconds=None,
+                percent=reporter.bytes_processed / reporter.total_bytes * 100
+                if reporter.numeric_progress
+                and reporter.total_bytes
+                and reporter.bytes_processed is not None
+                else None,
+            )
         mark_batch_failed(workspace_id, batch_id, str(error))
         raise
-
-
