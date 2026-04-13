@@ -1,12 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { LoaderCircle, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 
 import { api, MissingToolsError } from "@/lib/api";
 import { getDesktopBridge } from "@/lib/desktop";
 import type { SampleLane, Workspace } from "@/lib/types";
-import { countReadyRequiredOutputs } from "@/lib/workspace-utils";
 
 import { IngestionHeader } from "./ingestion/IngestionHeader";
 import { LaneAccordionSection } from "./ingestion/LaneAccordionSection";
@@ -36,18 +34,12 @@ export default function IngestionStagePanel({
     tumor: emptyPreviewState(),
     normal: emptyPreviewState(),
   });
-  const [isResetting, setIsResetting] = useState(false);
   const [desktopAvailable, setDesktopAvailable] = useState(false);
   const [missingTools, setMissingTools] = useState<MissingToolsError | null>(null);
 
   useEffect(() => {
     setDesktopAvailable(Boolean(getDesktopBridge()));
   }, []);
-
-  const readyOutputCount = useMemo(
-    () => countReadyRequiredOutputs(workspace),
-    [workspace]
-  );
 
   const alignmentState = workspace.ingestion.readyForAlignment ? "unlocked" : "locked";
 
@@ -197,42 +189,9 @@ export default function IngestionStagePanel({
     );
   }
 
-  async function handleReset() {
-    if (
-      !window.confirm(
-        "Reset ingestion and remove local derived outputs for this workspace?"
-      )
-    ) {
-      return;
-    }
-
-    setIsResetting(true);
-    try {
-      const updatedWorkspace = await api.resetWorkspaceIngestion(workspace.id);
-      onWorkspaceChange(updatedWorkspace);
-      setPreviewStates({
-        tumor: emptyPreviewState(),
-        normal: emptyPreviewState(),
-      });
-      setLaneErrors({ tumor: null, normal: null });
-      setActiveLane("normal");
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unable to reset ingestion.";
-      setLaneErrors({ tumor: message, normal: message });
-    } finally {
-      setIsResetting(false);
-    }
-  }
-
-  const tumorHasFiles = workspace.ingestion.lanes.tumor.sourceFileCount > 0;
-
   return (
     <div className="space-y-3">
-      <IngestionHeader
-        readyOutputCount={readyOutputCount}
-        alignmentState={alignmentState}
-      />
+      <IngestionHeader alignmentState={alignmentState} />
 
       {missingTools ? <MissingToolsCallout error={missingTools} /> : null}
 
@@ -241,8 +200,6 @@ export default function IngestionStagePanel({
           const summary = workspace.ingestion.lanes[lane];
           const files = sourceFilesForLane(workspace, lane);
           const isActive = activeLane === lane;
-          const showContinue =
-            lane === "normal" && summary.readyForAlignment && !tumorHasFiles;
           return (
             <LaneAccordionSection
               key={lane}
@@ -254,7 +211,6 @@ export default function IngestionStagePanel({
               isExpanded={isActive}
               onHeaderClick={() => setActiveLane(lane)}
               onPickFiles={() => void handlePick(lane)}
-              onContinue={showContinue ? () => setActiveLane("tumor") : undefined}
               isSubmitting={submittingLane === lane}
               laneError={laneErrors[lane]}
               previewState={previewStates[lane]}
@@ -264,22 +220,6 @@ export default function IngestionStagePanel({
             />
           );
         })}
-      </div>
-
-      <div className="flex justify-end pt-2">
-        <button
-          type="button"
-          onClick={() => void handleReset()}
-          disabled={isResetting}
-          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-stone-400 transition-colors hover:text-stone-700 disabled:opacity-50"
-        >
-          {isResetting ? (
-            <LoaderCircle className="size-3 animate-spin" />
-          ) : (
-            <Trash2 className="size-3" />
-          )}
-          Reset ingestion
-        </button>
       </div>
     </div>
   );

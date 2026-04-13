@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, Check, ChevronDown, FolderOpen, LoaderCircle } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, FolderOpen, LoaderCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import type { SampleLane, Workspace, WorkspaceFile } from "@/lib/types";
@@ -24,7 +24,6 @@ interface LaneAccordionSectionProps {
   isExpanded: boolean;
   onHeaderClick: () => void;
   onPickFiles: () => void;
-  onContinue?: () => void;
   isSubmitting: boolean;
   laneError: string | null;
   previewState: PreviewState;
@@ -54,7 +53,6 @@ export function LaneAccordionSection({
   isExpanded,
   onHeaderClick,
   onPickFiles,
-  onContinue,
   isSubmitting,
   laneError,
   previewState,
@@ -175,19 +173,6 @@ export function LaneAccordionSection({
                 onRetry={onRetryPreview}
                 showLegend={showLegend}
               />
-            ) : null}
-
-            {onContinue ? (
-              <div className="flex justify-end pt-1">
-                <button
-                  type="button"
-                  onClick={onContinue}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-emerald-600 px-4 py-2 text-[13px] font-medium text-white transition-colors hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2"
-                >
-                  Continue to tumor sample
-                  <ArrowRight className="size-3.5" />
-                </button>
-              </div>
             ) : null}
           </div>
         </div>

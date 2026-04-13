@@ -3,18 +3,14 @@ import { cn } from "@/lib/utils";
 export type AlignmentState = "locked" | "unlocked";
 
 export function IngestionHeader({
-  readyOutputCount,
   alignmentState,
 }: {
-  readyOutputCount: number;
   alignmentState: AlignmentState;
 }) {
   const isUnlocked = alignmentState === "unlocked";
-  const message = messageFor(readyOutputCount);
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 px-1 pt-1 pb-3">
-      <p className="text-sm text-stone-600">{message}</p>
+    <div className="flex flex-wrap items-center justify-end gap-3 px-1 pt-1 pb-3">
       <span
         data-testid="alignment-status-indicator"
         data-state={alignmentState}
@@ -35,14 +31,4 @@ export function IngestionHeader({
       </span>
     </div>
   );
-}
-
-function messageFor(readyOutputCount: number) {
-  if (readyOutputCount === 0) {
-    return "Pick the two sample files to start the analysis.";
-  }
-  if (readyOutputCount < 4) {
-    return "One sample to go.";
-  }
-  return "Both samples loaded.";
 }
