@@ -637,7 +637,7 @@ function InsufficientMemoryCallout({
         <div>Not enough free memory for reference indexing.</div>
       </div>
       <p className="mt-1.5 pl-5 text-amber-800">
-        bwa-mem2 builds the human genome index once on first run and peaks at
+        strobealign builds the human genome index once on first run and peaks at
         around {formatGiB(error.requiredBytes)} of RAM. Right now only{" "}
         <span className="font-mono text-[12px]">{availableLabel}</span> is
         available.
@@ -658,7 +658,7 @@ function InsufficientMemoryCallout({
       </ol>
       <p className="mt-2 pl-5 text-[12px] text-amber-700">
         The download and partial indices are already on disk — only the final
-        genome.fa.bwt.2bit.64 file still needs to be built.
+        genome.fa.r150.sti file still needs to be built.
       </p>
     </div>
   );

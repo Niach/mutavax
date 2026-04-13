@@ -7,16 +7,16 @@ import pytest
 from app.services import tool_preflight
 from app.services.tool_preflight import (
     ALIGNMENT_TOOLS,
-    BWA_MEM2_INDEX_MEMORY_BYTES,
-    BWA_MEM2_REQUIREMENT,
     INGESTION_TOOLS,
     InsufficientMemoryError,
     MissingToolError,
     PIGZ_REQUIREMENT,
     SAMTOOLS_REQUIREMENT,
+    STROBEALIGN_INDEX_MEMORY_BYTES,
+    STROBEALIGN_REQUIREMENT,
     ToolRequirement,
     ingestion_tools_for_paths,
-    verify_memory_for_bwa_mem2_index,
+    verify_memory_for_strobealign_index,
     verify_tools,
 )
 
@@ -50,13 +50,13 @@ def test_verify_tools_lists_all_missing_tools(monkeypatch):
     monkeypatch.setattr(
         tool_preflight.shutil,
         "which",
-        _which_factory({"samtools", "bwa-mem2"}),
+        _which_factory({"samtools", "strobealign"}),
     )
 
     with pytest.raises(MissingToolError) as exc_info:
         verify_tools(ALIGNMENT_TOOLS)
 
-    assert set(exc_info.value.tool_names) == {"samtools", "bwa-mem2"}
+    assert set(exc_info.value.tool_names) == {"samtools", "strobealign"}
 
 
 def test_payload_shape_matches_api_contract(monkeypatch):
@@ -112,7 +112,7 @@ def test_alignment_and_ingestion_tool_sets_overlap_on_samtools():
     ingest_names = {tool.name for tool in INGESTION_TOOLS}
     assert "samtools" in align_names
     assert "samtools" in ingest_names
-    assert BWA_MEM2_REQUIREMENT in ALIGNMENT_TOOLS
+    assert STROBEALIGN_REQUIREMENT in ALIGNMENT_TOOLS
     assert PIGZ_REQUIREMENT in INGESTION_TOOLS
 
 
@@ -163,13 +163,13 @@ def test_memory_preflight_passes_when_enough_free(monkeypatch):
     monkeypatch.setattr(
         tool_preflight,
         "read_available_memory_bytes",
-        lambda: BWA_MEM2_INDEX_MEMORY_BYTES + 1024,
+        lambda: STROBEALIGN_INDEX_MEMORY_BYTES + 1024,
     )
-    verify_memory_for_bwa_mem2_index()
+    verify_memory_for_strobealign_index()
 
 
 def test_memory_preflight_raises_when_below_threshold(monkeypatch):
-    below = BWA_MEM2_INDEX_MEMORY_BYTES - 1024 * 1024 * 1024  # 1 GB short
+    below = STROBEALIGN_INDEX_MEMORY_BYTES - 1024 * 1024 * 1024  # 1 GB short
     monkeypatch.setattr(
         tool_preflight,
         "read_available_memory_bytes",
@@ -177,12 +177,12 @@ def test_memory_preflight_raises_when_below_threshold(monkeypatch):
     )
 
     with pytest.raises(InsufficientMemoryError) as exc_info:
-        verify_memory_for_bwa_mem2_index()
+        verify_memory_for_strobealign_index()
 
     error = exc_info.value
-    assert error.required_bytes == BWA_MEM2_INDEX_MEMORY_BYTES
+    assert error.required_bytes == STROBEALIGN_INDEX_MEMORY_BYTES
     assert error.available_bytes == below
-    assert "bwa-mem2 index" in error.purpose
+    assert "strobealign" in error.purpose
 
 
 def test_memory_preflight_passes_when_proc_unreadable(monkeypatch):
@@ -193,18 +193,18 @@ def test_memory_preflight_passes_when_proc_unreadable(monkeypatch):
         "read_available_memory_bytes",
         lambda: None,
     )
-    verify_memory_for_bwa_mem2_index()
+    verify_memory_for_strobealign_index()
 
 
 def test_insufficient_memory_payload_shape():
     error = InsufficientMemoryError(
-        required_bytes=BWA_MEM2_INDEX_MEMORY_BYTES,
+        required_bytes=STROBEALIGN_INDEX_MEMORY_BYTES,
         available_bytes=1024 * 1024 * 1024,
         purpose="Reference indexing",
     )
     payload = error.to_payload()
     assert payload["code"] == "insufficient_memory"
-    assert payload["required_bytes"] == BWA_MEM2_INDEX_MEMORY_BYTES
+    assert payload["required_bytes"] == STROBEALIGN_INDEX_MEMORY_BYTES
     assert payload["available_bytes"] == 1024 * 1024 * 1024
     assert payload["purpose"] == "Reference indexing"
     assert isinstance(payload["message"], str) and payload["message"]
@@ -212,10 +212,10 @@ def test_insufficient_memory_payload_shape():
 
 def test_insufficient_memory_payload_handles_unknown_available():
     error = InsufficientMemoryError(
-        required_bytes=BWA_MEM2_INDEX_MEMORY_BYTES,
+        required_bytes=STROBEALIGN_INDEX_MEMORY_BYTES,
         available_bytes=None,
         purpose="Reference indexing",
     )
     payload = error.to_payload()
     assert payload["available_bytes"] is None
-    assert "about 30 GB" in payload["message"]
+    assert "about 35 GB" in payload["message"]

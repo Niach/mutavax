@@ -84,7 +84,7 @@ def require_live_alignment_prerequisites() -> None:
         binary
         for binary in (
             resolve_binary_name("SAMTOOLS_BINARY", "samtools"),
-            resolve_binary_name("ALIGNMENT_BWA_BINARY", "bwa-mem2"),
+            resolve_binary_name("ALIGNMENT_STROBEALIGN_BINARY", "strobealign"),
         )
         if shutil.which(binary) is None
     ]

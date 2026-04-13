@@ -28,7 +28,7 @@ Build a desktop-first studio for designing personalized mRNA cancer vaccines. Us
 - FastAPI, Pydantic v2, SQLAlchemy 2.0, Biopython
 - Local filesystem + SQLite via `backend/app/runtime.py`
 - `samtools` for BAM/CRAM -> FASTQ normalization
-- `bwa-mem2` + `samtools` for alignment
+- `strobealign` + `samtools` for alignment
 
 ## Repo Map
 
@@ -124,7 +124,7 @@ Frontend uses camelCase, backend uses snake_case. `src/lib/api.ts` handles the m
 - Paired tumor + normal lane model with local-file registration (FASTQ / BAM / CRAM)
 - Canonical FASTQ normalization via `samtools` (BAM/CRAM → paired gzipped FASTQ)
 - Lane-level canonical read preview (sampled FASTQ + GC / length stats)
-- Alignment stage: BWA-MEM2 + samtools, per-lane flagstat / idxstats / stats, QC verdict
+- Alignment stage: strobealign + samtools, per-lane flagstat / idxstats / stats, QC verdict
 - First-run reference bootstrap under the app-data directory; custom `REFERENCE_*_FASTA` overrides
 - Alignment artifact download (BAM / BAI / flagstat / idxstats / stats)
 - Desktop intake via Electron IPC bridge (`src/lib/desktop.ts` ↔ `electron/preload.cjs`)

@@ -254,15 +254,12 @@ def ensure_download_verified(path: Path, spec: ReferenceSourceSpec) -> None:
         )
 
 
-def bwa_index_exists(reference_path: Path) -> bool:
-    suffixes = [".amb", ".ann", ".pac", ".0123"]
-    has_core = all((reference_path.with_name(reference_path.name + suffix)).exists() for suffix in suffixes)
-    has_bwt = any(reference_path.parent.glob(f"{reference_path.name}.bwt*"))
-    return has_core and has_bwt
+def strobealign_index_exists(reference_path: Path) -> bool:
+    return any(reference_path.parent.glob(f"{reference_path.name}.r*.sti"))
 
 
 def ensure_reference_indices(reference_path: Path) -> None:
-    bwa_binary = os.getenv("ALIGNMENT_BWA_BINARY", "bwa-mem2")
+    aligner_binary = os.getenv("ALIGNMENT_STROBEALIGN_BINARY", "strobealign")
     samtools_binary = os.getenv("SAMTOOLS_BINARY", "samtools")
 
     if not reference_path.exists():
@@ -276,13 +273,13 @@ def ensure_reference_indices(reference_path: Path) -> None:
             text=True,
         )
 
-    if not bwa_index_exists(reference_path):
+    if not strobealign_index_exists(reference_path):
         # Local import to avoid a service-layer import cycle.
-        from app.services.tool_preflight import verify_memory_for_bwa_mem2_index
+        from app.services.tool_preflight import verify_memory_for_strobealign_index
 
-        verify_memory_for_bwa_mem2_index()
+        verify_memory_for_strobealign_index()
         subprocess.run(
-            [bwa_binary, "index", str(reference_path)],
+            [aligner_binary, "--create-index", "-r", "150", str(reference_path)],
             check=True,
             capture_output=True,
             text=True,
@@ -840,14 +837,19 @@ def enqueue_alignment_run(
         )
 
 
-def build_read_group(workspace_display_name: str, workspace_id: str, sample_lane: SampleLane) -> str:
+def build_read_group(
+    workspace_display_name: str, workspace_id: str, sample_lane: SampleLane
+) -> list[str]:
     sample = re.sub(r"[^A-Za-z0-9_.-]+", "-", workspace_display_name.strip()) or workspace_id
     rg_id = f"{workspace_id}.{sample_lane.value}"
     rg_sample = f"{sample}.{sample_lane.value}"
-    return (
-        f"@RG\\tID:{rg_id}\\tSM:{rg_sample}\\tLB:{workspace_id}"
-        f"\\tPL:ILLUMINA\\tPU:{rg_id}"
-    )
+    return [
+        f"--rg-id={rg_id}",
+        f"--rg=SM:{rg_sample}",
+        f"--rg=LB:{workspace_id}",
+        "--rg=PL:ILLUMINA",
+        f"--rg=PU:{rg_id}",
+    ]
 
 
 def run_command(command: list[str]) -> str:
@@ -856,21 +858,19 @@ def run_command(command: list[str]) -> str:
     return stderr
 
 
-def run_bwa_name_sort_pipeline(
+def run_strobealign_name_sort_pipeline(
     *,
     reference_path: Path,
-    read_group: str,
+    read_group_flags: list[str],
     r1_path: Path,
     r2_path: Path,
     output_path: Path,
-    bwa_binary: str,
+    aligner_binary: str,
     samtools_binary: str,
 ) -> list[str]:
-    bwa_command = [
-        bwa_binary,
-        "mem",
-        "-R",
-        read_group,
+    aligner_command = [
+        aligner_binary,
+        *read_group_flags,
         str(reference_path),
         str(r1_path),
         str(r2_path),
@@ -884,38 +884,38 @@ def run_bwa_name_sort_pipeline(
         "-",
     ]
 
-    bwa_process = subprocess.Popen(
-        bwa_command,
+    aligner_process = subprocess.Popen(
+        aligner_command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
     try:
         sort_result = subprocess.run(
             sort_command,
-            stdin=bwa_process.stdout,
+            stdin=aligner_process.stdout,
             capture_output=True,
             text=True,
             check=False,
         )
     finally:
-        if bwa_process.stdout is not None:
-            bwa_process.stdout.close()
+        if aligner_process.stdout is not None:
+            aligner_process.stdout.close()
 
-    bwa_stderr = b""
-    if bwa_process.stderr is not None:
-        bwa_stderr = bwa_process.stderr.read()
-        bwa_process.stderr.close()
-    bwa_returncode = bwa_process.wait()
-    if bwa_returncode != 0:
+    aligner_stderr = b""
+    if aligner_process.stderr is not None:
+        aligner_stderr = aligner_process.stderr.read()
+        aligner_process.stderr.close()
+    aligner_returncode = aligner_process.wait()
+    if aligner_returncode != 0:
         raise RuntimeError(
-            f"bwa-mem2 mem failed: {bwa_stderr.decode(errors='replace').strip()}"
+            f"strobealign failed: {aligner_stderr.decode(errors='replace').strip()}"
         )
     if sort_result.returncode != 0:
         raise RuntimeError(
             f"samtools sort failed: {sort_result.stderr.strip()}"
         )
 
-    return [quote_command(bwa_command), quote_command(sort_command)]
+    return [quote_command(aligner_command), quote_command(sort_command)]
 
 
 def parse_flagstat(flagstat_text: str) -> tuple[int, int, float, Optional[float]]:
@@ -985,9 +985,9 @@ def execute_alignment_lane(
     r2_path: Path,
     working_dir: Path,
 ) -> LaneExecutionOutput:
-    bwa_binary = os.getenv("ALIGNMENT_BWA_BINARY", "bwa-mem2")
+    aligner_binary = os.getenv("ALIGNMENT_STROBEALIGN_BINARY", "strobealign")
     samtools_binary = os.getenv("SAMTOOLS_BINARY", "samtools")
-    read_group = build_read_group(workspace_display_name, workspace_id, sample_lane)
+    read_group_flags = build_read_group(workspace_display_name, workspace_id, sample_lane)
 
     name_sorted_bam = working_dir / f"{sample_lane.value}.name-sorted.bam"
     fixmate_bam = working_dir / f"{sample_lane.value}.fixmate.bam"
@@ -998,13 +998,13 @@ def execute_alignment_lane(
     idxstats_path = working_dir / f"{sample_lane.value}.idxstats.txt"
     stats_path = working_dir / f"{sample_lane.value}.stats.txt"
 
-    command_log = run_bwa_name_sort_pipeline(
+    command_log = run_strobealign_name_sort_pipeline(
         reference_path=reference_path,
-        read_group=read_group,
+        read_group_flags=read_group_flags,
         r1_path=r1_path,
         r2_path=r2_path,
         output_path=name_sorted_bam,
-        bwa_binary=bwa_binary,
+        aligner_binary=aligner_binary,
         samtools_binary=samtools_binary,
     )
 

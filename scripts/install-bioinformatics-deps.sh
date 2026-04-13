@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install the three external binaries the live ingestion + alignment stages
-# need: samtools, pigz, bwa-mem2.
+# need: samtools, pigz, strobealign.
 #
 # Tested on Linux Mint 22.3 / Ubuntu 24.04. Run with:
 #
@@ -8,12 +8,12 @@
 #
 set -euo pipefail
 
-BWA_VERSION="2.2.1"
-BWA_RELEASE="bwa-mem2-${BWA_VERSION}_x64-linux"
-BWA_TARBALL="${BWA_RELEASE}.tar.bz2"
-BWA_URL="https://github.com/bwa-mem2/bwa-mem2/releases/download/v${BWA_VERSION}/${BWA_TARBALL}"
+STROBEALIGN_VERSION="0.17.0"
+STROBEALIGN_SRC_DIR="strobealign-${STROBEALIGN_VERSION}"
+STROBEALIGN_TARBALL="v${STROBEALIGN_VERSION}.tar.gz"
+STROBEALIGN_URL="https://github.com/ksahlin/strobealign/archive/refs/tags/${STROBEALIGN_TARBALL}"
 INSTALL_DIR="/usr/local/bin"
-WORK_DIR="$(mktemp -d -t cancerstudio-bwa-mem2.XXXXXX)"
+WORK_DIR="$(mktemp -d -t cancerstudio-strobealign.XXXXXX)"
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -21,25 +21,30 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-echo "==> Installing samtools and pigz via apt"
+echo "==> Installing samtools, pigz, and the strobealign build toolchain via apt"
 apt-get update
-apt-get install -y samtools pigz
+apt-get install -y samtools pigz build-essential cmake zlib1g-dev
 
-echo "==> Downloading bwa-mem2 v${BWA_VERSION}"
-curl -fsSL "${BWA_URL}" -o "${WORK_DIR}/${BWA_TARBALL}"
-tar -xjf "${WORK_DIR}/${BWA_TARBALL}" -C "${WORK_DIR}"
+echo "==> Downloading strobealign v${STROBEALIGN_VERSION}"
+curl -fsSL "${STROBEALIGN_URL}" -o "${WORK_DIR}/${STROBEALIGN_TARBALL}"
+tar -xzf "${WORK_DIR}/${STROBEALIGN_TARBALL}" -C "${WORK_DIR}"
 
-echo "==> Installing bwa-mem2 wrapper and SIMD variants to ${INSTALL_DIR}"
-install -m 0755 "${WORK_DIR}/${BWA_RELEASE}/bwa-mem2" "${INSTALL_DIR}/bwa-mem2"
-for variant in "${WORK_DIR}/${BWA_RELEASE}"/bwa-mem2.*; do
-  install -m 0755 "${variant}" "${INSTALL_DIR}/$(basename "${variant}")"
-done
+echo "==> Building strobealign (Release)"
+cmake -B "${WORK_DIR}/${STROBEALIGN_SRC_DIR}/build" \
+      -S "${WORK_DIR}/${STROBEALIGN_SRC_DIR}" \
+      -DCMAKE_BUILD_TYPE=Release
+make -C "${WORK_DIR}/${STROBEALIGN_SRC_DIR}/build" -j"$(nproc)"
+
+echo "==> Installing strobealign to ${INSTALL_DIR}"
+install -m 0755 \
+  "${WORK_DIR}/${STROBEALIGN_SRC_DIR}/build/strobealign" \
+  "${INSTALL_DIR}/strobealign"
 
 echo
 echo "==> Verifying installations"
 echo -n "samtools: "; samtools --version | head -1
 echo -n "pigz: "; pigz --version 2>&1 | head -1
-echo -n "bwa-mem2: "; bwa-mem2 version 2>&1 | tail -1
+echo -n "strobealign: "; strobealign --version 2>&1 | tail -1
 
 echo
 echo "Done. Restart the backend (kill the running uvicorn, re-launch) so the"

@@ -3,8 +3,8 @@
 #
 # Run this once in a clean terminal (dev servers + Electron + browser closed)
 # when the backend's in-process "Preparing reference" step doesn't have enough
-# memory to finish bwa-mem2 index. It re-runs the index on the already-
-# downloaded FASTA in isolation, so nothing else is fighting for RAM.
+# memory to finish strobealign --create-index. It re-runs the index on the
+# already-downloaded FASTA in isolation, so nothing else is fighting for RAM.
 #
 # Usage:
 #   scripts/prepare-reference.sh                 # indexes GRCh38 by default
@@ -17,11 +17,11 @@ set -euo pipefail
 DEFAULT_FASTA="${HOME}/.local/share/cancerstudio/references/grch38/genome.fa"
 FASTA="${1:-${DEFAULT_FASTA}}"
 
-REQUIRED_GB=30
+REQUIRED_GB=35
 REQUIRED_KB=$(( REQUIRED_GB * 1024 * 1024 ))
 
-if ! command -v bwa-mem2 > /dev/null; then
-  echo "ERROR: bwa-mem2 is not on PATH." >&2
+if ! command -v strobealign > /dev/null; then
+  echo "ERROR: strobealign is not on PATH." >&2
   echo "Run: sudo bash scripts/install-bioinformatics-deps.sh" >&2
   exit 1
 fi
@@ -46,10 +46,10 @@ if [[ -r /proc/meminfo ]]; then
   if [[ "${available_kb}" -lt "${REQUIRED_KB}" ]]; then
     echo "ERROR: only ${available_gb} GB of memory is available (need at least ${REQUIRED_GB} GB)." >&2
     echo "Close heavy applications (browser, Electron, IDE, dev servers) and try again." >&2
-    echo "bwa-mem2 index peaks at ~28 GB while building genome.fa.bwt.2bit.64." >&2
+    echo "strobealign --create-index peaks at ~31 GB while building genome.fa.r150.sti." >&2
     exit 2
   fi
-  echo "==> ${available_gb} GB of memory available (need ${REQUIRED_GB} GB, peak ~28 GB)"
+  echo "==> ${available_gb} GB of memory available (need ${REQUIRED_GB} GB, peak ~31 GB)"
 fi
 
 bundle_dir="$(dirname "${FASTA}")"
@@ -63,20 +63,21 @@ else
   echo "==> Skipping samtools faidx (${FASTA}.fai already exists)"
 fi
 
-# bwa-mem2 index doesn't support resuming, so the partial state gets overwritten.
-# Leaving the old files in place is fine — bwa-mem2 just rewrites them.
-if [[ -f "${FASTA}.bwt.2bit.64" ]]; then
-  echo "==> ${FASTA}.bwt.2bit.64 already present; nothing to do."
+# strobealign --create-index writes <fasta>.r<read_len>.sti. If any .r*.sti is
+# already present we're done; strobealign will pick it up on the next alignment.
+if compgen -G "${FASTA}.r*.sti" > /dev/null; then
+  echo "==> Strobealign .sti index already present; nothing to do."
+  ls -lh "${FASTA}".r*.sti 2>&1 | sed 's/^/    /'
   exit 0
 fi
 
-echo "==> Running bwa-mem2 index (this takes ~10-15 minutes and peaks at ~28 GB RAM)"
+echo "==> Running strobealign --create-index -r 150 (takes a few minutes and peaks at ~31 GB RAM)"
 echo "    Keep an eye on memory; if it spills into swap, kill this and close more apps."
 echo
-bwa-mem2 index "${FASTA}"
+strobealign --create-index -r 150 "${FASTA}"
 
 echo
-echo "==> Done. Full index written to ${bundle_dir}:"
+echo "==> Done. Index written to ${bundle_dir}:"
 ls -lh "${bundle_dir}"/genome.fa.* 2>&1 | sed 's/^/    /'
 echo
 echo "Restart the backend and the alignment stage will skip bootstrapping."

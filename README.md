@@ -27,7 +27,7 @@ Ingestion and alignment are live. The downstream stages are wired into the UI bu
 
 - Frontend: Next.js 15.5, React 19, TypeScript, Tailwind CSS
 - Desktop shell: Electron
-- Backend: FastAPI, SQLAlchemy, samtools, pigz, bwa-mem2
+- Backend: FastAPI, SQLAlchemy, samtools, pigz, strobealign
 - Storage: local filesystem + SQLite
 
 ## Local development
@@ -81,16 +81,16 @@ cancerstudio shells out to three bioinformatics binaries from the FastAPI backen
 | Tool | Purpose | Used by |
 |------|---------|---------|
 | `samtools` ≥ 1.16 | BAM/CRAM normalization, sort, index, flagstat, idxstats, stats, markdup | Ingestion + Alignment |
-| `bwa-mem2` ≥ 2.2 | Reference indexing and paired-end alignment | Alignment |
+| `strobealign` ≥ 0.17 | Reference indexing and paired-end alignment | Alignment |
 | `pigz` ≥ 2.6 | Multithreaded FASTQ compression for managed `.fastq.gz` outputs | Ingestion |
 
 If any of these are missing the backend will reject the relevant API call up-front with a structured `503 missing_tools` response, and the UI surfaces a friendly callout listing what to install — no more raw `[Errno 2]` stack traces.
 
-> **Memory warning for the first alignment run.** `bwa-mem2 index` peaks at roughly **28 GB of RAM** while building `genome.fa.bwt.2bit.64`. The backend refuses to start indexing if `/proc/meminfo` reports less than 30 GB available, so your box won't get pushed into swap. If you're on a modest machine, close your browser, IDE, and dev servers before hitting *Start alignment* the first time — or run `scripts/prepare-reference.sh` from a clean terminal to finish the index in isolation. Once the index is on disk the backend detects it on subsequent runs and skips bootstrapping entirely.
+> **Memory warning for the first alignment run.** `strobealign --create-index` peaks at roughly **31 GB of RAM** while building `genome.fa.r150.sti`. The backend refuses to start indexing if `/proc/meminfo` reports less than 35 GB available, so your box won't get pushed into swap. If you're on a modest machine, close your browser, IDE, and dev servers before hitting *Start alignment* the first time — or run `scripts/prepare-reference.sh` from a clean terminal to finish the index in isolation. Once the index is on disk the backend detects it on subsequent runs and skips bootstrapping entirely.
 
 ### Install on Ubuntu / Debian / Linux Mint
 
-A helper script handles all three. It pulls `samtools` + `pigz` from apt and downloads the upstream static `bwa-mem2` v2.2.1 build (not in apt) into `/usr/local/bin`:
+A helper script handles all three. It pulls `samtools` + `pigz` + the build toolchain from apt, then builds `strobealign` v0.17.0 from source into `/usr/local/bin` (upstream doesn't ship prebuilt binaries):
 
 ```bash
 sudo bash scripts/install-bioinformatics-deps.sh
@@ -100,26 +100,27 @@ Or do it by hand:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y samtools pigz
+sudo apt-get install -y samtools pigz build-essential cmake zlib1g-dev
 
-curl -fsSL https://github.com/bwa-mem2/bwa-mem2/releases/download/v2.2.1/bwa-mem2-2.2.1_x64-linux.tar.bz2 -o /tmp/bwa-mem2.tar.bz2
-tar -xjf /tmp/bwa-mem2.tar.bz2 -C /tmp
-sudo install -m 0755 /tmp/bwa-mem2-2.2.1_x64-linux/bwa-mem2 /usr/local/bin/bwa-mem2
-sudo cp /tmp/bwa-mem2-2.2.1_x64-linux/bwa-mem2.* /usr/local/bin/
-rm -rf /tmp/bwa-mem2.tar.bz2 /tmp/bwa-mem2-2.2.1_x64-linux
+curl -fsSL https://github.com/ksahlin/strobealign/archive/refs/tags/v0.17.0.tar.gz -o /tmp/strobealign.tar.gz
+tar -xzf /tmp/strobealign.tar.gz -C /tmp
+cmake -B /tmp/strobealign-0.17.0/build -S /tmp/strobealign-0.17.0 -DCMAKE_BUILD_TYPE=Release
+make -C /tmp/strobealign-0.17.0/build -j"$(nproc)"
+sudo install -m 0755 /tmp/strobealign-0.17.0/build/strobealign /usr/local/bin/strobealign
+rm -rf /tmp/strobealign.tar.gz /tmp/strobealign-0.17.0
 ```
 
 ### Install on macOS
 
 ```bash
-brew install samtools pigz bwa-mem2
+brew install samtools pigz strobealign
 ```
 
 ### Verify
 
 ```bash
 samtools --version | head -1
-bwa-mem2 version
+strobealign --version
 pigz --version
 ```
 
@@ -128,7 +129,7 @@ pigz --version
 Useful when you have non-standard binary locations or want to point at a specific build:
 
 - `SAMTOOLS_BINARY` — absolute path or alternate command name (default `samtools`)
-- `ALIGNMENT_BWA_BINARY` — absolute path or alternate command name (default `bwa-mem2`)
+- `ALIGNMENT_STROBEALIGN_BINARY` — absolute path or alternate command name (default `strobealign`)
 - `PIGZ_BINARY` — absolute path or alternate command name (default `pigz`)
 - `PIGZ_THREADS` — worker count for pigz compression
 
@@ -140,7 +141,7 @@ If *Start alignment* refuses with an "insufficient memory" callout, or you'd jus
 bash scripts/prepare-reference.sh
 ```
 
-Defaults to `~/.local/share/cancerstudio/references/grch38/genome.fa`. Pass a different FASTA as the first argument to index something else. The script checks `MemAvailable`, refuses to start if <30 GB is free, and runs `samtools faidx` + `bwa-mem2 index` in a clean process. Once it finishes, restart the backend — the alignment stage will detect the existing index and skip bootstrapping entirely.
+Defaults to `~/.local/share/cancerstudio/references/grch38/genome.fa`. Pass a different FASTA as the first argument to index something else. The script checks `MemAvailable`, refuses to start if <35 GB is free, and runs `samtools faidx` + `strobealign --create-index -r 150` in a clean process. Once it finishes, restart the backend — the alignment stage will detect the existing index and skip bootstrapping entirely.
 
 ## Tests
 
@@ -171,7 +172,7 @@ npm run test:backend:real-data
 Opt-in live alignment smoke:
 
 - uses the matched SEQC2 tumor/normal FASTQ smoke pair
-- requires local `samtools` and `bwa-mem2`
+- requires local `samtools` and `strobealign`
 - downloads and indexes `GRCh38` on first run unless `REFERENCE_GRCH38_FASTA` is already set
 - runs only when `REAL_DATA_RUN_ALIGNMENT=1`
 

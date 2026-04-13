@@ -1,6 +1,6 @@
 """External-binary preflight checks for the live pipeline stages.
 
-The ingestion and alignment routes shell out to ``samtools``, ``bwa-mem2`` and
+The ingestion and alignment routes shell out to ``samtools``, ``strobealign`` and
 ``pigz``. When any of those is missing the subprocess raises ``FileNotFoundError``
 which surfaces to the UI as an unfriendly raw stack trace. This module gives the
 API a way to check up-front and raise a structured error the frontend can render
@@ -58,14 +58,15 @@ SAMTOOLS_REQUIREMENT = ToolRequirement(
     install_hint="sudo apt-get install samtools  # or: brew install samtools",
 )
 
-BWA_MEM2_REQUIREMENT = ToolRequirement(
-    name="bwa-mem2",
-    env_var="ALIGNMENT_BWA_BINARY",
-    default_binary="bwa-mem2",
+STROBEALIGN_REQUIREMENT = ToolRequirement(
+    name="strobealign",
+    env_var="ALIGNMENT_STROBEALIGN_BINARY",
+    default_binary="strobealign",
     install_hint=(
-        "Download the static linux build from "
-        "https://github.com/bwa-mem2/bwa-mem2/releases and put bwa-mem2 on PATH "
-        "(macOS: brew install bwa-mem2)"
+        "Build from source: git clone https://github.com/ksahlin/strobealign "
+        "&& cmake -B build -S strobealign -DCMAKE_BUILD_TYPE=Release "
+        "&& make -C build && install build/strobealign on PATH "
+        "(macOS: brew install strobealign; bioconda: conda install -c bioconda strobealign)"
     ),
 )
 
@@ -84,7 +85,7 @@ INGESTION_TOOLS: tuple[ToolRequirement, ...] = (
 
 ALIGNMENT_TOOLS: tuple[ToolRequirement, ...] = (
     SAMTOOLS_REQUIREMENT,
-    BWA_MEM2_REQUIREMENT,
+    STROBEALIGN_REQUIREMENT,
 )
 
 
@@ -152,11 +153,12 @@ def verify_tools(tools: Iterable[ToolRequirement]) -> None:
         raise MissingToolError(missing)
 
 
-# bwa-mem2's README quotes ~28 GB peak for GRCh38 indexing. Add a 2 GB buffer
-# so we refuse to start when the OS-reported available memory is under 30 GB.
-# This is deliberately pessimistic; freezing the user's box once is a much
-# worse UX than a false-positive "insufficient memory" warning.
-BWA_MEM2_INDEX_MEMORY_BYTES = 30 * 1024 * 1024 * 1024
+# Strobealign peaks at ~31 GB building the hg38 strobemer index (544M syncmer
+# seeds) and ~25–33 GB during alignment. A 35 GB threshold gives a ~2 GB safety
+# buffer over the indexing peak and ~2 GB over the alignment peak — enough that
+# the rest of the desktop stack (Electron, renderer, samtools sort stream,
+# Mutect2 later) doesn't get pushed into swap.
+STROBEALIGN_INDEX_MEMORY_BYTES = 35 * 1024 * 1024 * 1024
 
 
 def read_available_memory_bytes() -> int | None:
@@ -215,8 +217,8 @@ class InsufficientMemoryError(RuntimeError):
         }
 
 
-def verify_memory_for_bwa_mem2_index() -> None:
-    """Refuse to start ``bwa-mem2 index`` when free RAM is below the threshold.
+def verify_memory_for_strobealign_index() -> None:
+    """Refuse to start ``strobealign --create-index`` when free RAM is below the threshold.
 
     Reads ``/proc/meminfo`` and raises :class:`InsufficientMemoryError` with a
     structured payload the API layer can surface as a 503. If ``/proc/meminfo``
@@ -226,9 +228,9 @@ def verify_memory_for_bwa_mem2_index() -> None:
     available = read_available_memory_bytes()
     if available is None:
         return
-    if available < BWA_MEM2_INDEX_MEMORY_BYTES:
+    if available < STROBEALIGN_INDEX_MEMORY_BYTES:
         raise InsufficientMemoryError(
-            required_bytes=BWA_MEM2_INDEX_MEMORY_BYTES,
+            required_bytes=STROBEALIGN_INDEX_MEMORY_BYTES,
             available_bytes=available,
-            purpose="Reference indexing (bwa-mem2 index)",
+            purpose="Reference indexing (strobealign --create-index)",
         )

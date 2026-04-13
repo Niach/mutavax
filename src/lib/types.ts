@@ -270,7 +270,7 @@ export const PIPELINE_STAGES: PipelineStage[] = [
     name: "Alignment",
     description: "Align canonical tumor and normal FASTQ reads, then score BAM quality",
     icon: "GitBranch",
-    tools: ["BWA-MEM2", "samtools"],
+    tools: ["strobealign", "samtools"],
     implementationState: "live",
     group: "primary",
   },
