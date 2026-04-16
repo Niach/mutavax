@@ -87,6 +87,30 @@ def is_path_within_app_data(path: Path) -> bool:
         return False
 
 
+def atomic_write_json(path: Path, data: Any) -> None:
+    """Write JSON to path via a tmp file + rename.
+
+    Durability note: readers that see the final path always see a complete
+    document; partial writes never become visible.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2, sort_keys=True)
+    tmp_path.replace(path)
+
+
+def atomic_read_json(path: Path) -> Any | None:
+    """Read JSON, returning None if missing or malformed."""
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def _settings_path() -> Path:
     return get_app_data_root() / "settings.json"
 

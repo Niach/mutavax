@@ -94,6 +94,16 @@
               aligner threads, sort memory) are exposed inline with a live
               RAM-footprint estimator.
             </p>
+            <p class="section-sub">
+              Multi-hour runs need multi-hour UX: blended progress bar with
+              per-phase sub-bars, rolling ETA, heartbeat and stall detection,
+              and a live tail of the commands actually running. Need your
+              machine back? Hit <strong>Stop &amp; keep progress</strong> and
+              every aligned chunk stays on disk &mdash; <strong>Resume</strong>
+              picks up from the next un-aligned chunk instead of starting
+              over. <strong>Cancel &amp; discard</strong> is there too when
+              you want a clean slate.
+            </p>
           </div>
           <figure class="shot">
             <img
@@ -150,7 +160,7 @@
               <span class="stage-num">2</span>
               <div class="stage-body">
                 <strong>Alignment</strong>
-                <p>Chunked strobealign against GRCh38, CanFam4, or felCat9. Verified on COLO829 100&times; WGS.</p>
+                <p>Chunked strobealign against GRCh38, CanFam4, or felCat9. Stop-and-resume at chunk granularity. Verified on COLO829 100&times; WGS.</p>
               </div>
               <span class="chip chip-live">Live</span>
             </li>

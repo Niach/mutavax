@@ -17,8 +17,8 @@ Inspired by Paul Conyngham's work creating a personalized mRNA vaccine for his d
 | # | Stage | Status | Tools | Description |
 |---|-------|--------|-------|-------------|
 | 1 | Ingestion | **Live** | samtools, fastp | Choose local FASTQ/BAM/CRAM files, normalize to canonical paired FASTQ |
-| 2 | Alignment | **Live** | strobealign, samtools | Align canonical tumor/normal FASTQ pairs, persist BAMs, and score QC |
-| 3 | Variant Calling | Planned | GATK Mutect2 | Identify somatic mutations from the aligned tumor/normal BAMs |
+| 2 | Alignment | **Live** | strobealign, samtools | Chunked pipeline with stop-and-resume; aligns canonical tumor/normal FASTQ pairs, persists BAMs, and scores QC |
+| 3 | Variant Calling | Scaffolded | GATK Mutect2 | Panel + API wired; Mutect2 orchestration is the next piece |
 | 4 | Annotation | Planned | Ensembl VEP | Annotate variants with functional consequences |
 | 5 | Neoantigen Prediction | Planned | pVACseq, NetMHCpan-4.1 | Predict MHC binding for mutant peptides |
 | 6 | Epitope Selection | Planned | pVACview, custom scoring | Rank and select optimal vaccine targets |

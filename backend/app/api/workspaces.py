@@ -14,10 +14,13 @@ from app.models.schemas import (
 )
 from app.services.alignment import (
     AlignmentArtifactNotFoundError,
+    cancel_alignment_run,
     create_alignment_run,
     load_alignment_artifact_download,
     load_alignment_stage_summary,
+    pause_alignment_run,
     rerun_alignment,
+    resume_alignment_run,
 )
 from app.services.variant_calling import (
     VariantCallingArtifactNotFoundError,
@@ -155,6 +158,51 @@ async def rerun_alignment_stage(workspace_id: str):
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
         raise unexpected_workspace_error("Alignment rerun", error) from error
+
+
+@router.post(
+    "/{workspace_id}/alignment/runs/{run_id}/cancel",
+    response_model=AlignmentStageSummaryResponse,
+)
+async def cancel_alignment_run_route(workspace_id: str, run_id: str):
+    try:
+        return cancel_alignment_run(workspace_id, run_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Alignment cancel", error) from error
+
+
+@router.post(
+    "/{workspace_id}/alignment/runs/{run_id}/pause",
+    response_model=AlignmentStageSummaryResponse,
+)
+async def pause_alignment_run_route(workspace_id: str, run_id: str):
+    try:
+        return pause_alignment_run(workspace_id, run_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Alignment pause", error) from error
+
+
+@router.post(
+    "/{workspace_id}/alignment/runs/{run_id}/resume",
+    response_model=AlignmentStageSummaryResponse,
+)
+async def resume_alignment_run_route(workspace_id: str, run_id: str):
+    try:
+        return resume_alignment_run(workspace_id, run_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Alignment resume", error) from error
 
 
 @router.get("/{workspace_id}/alignment/artifacts/{artifact_id}/download")

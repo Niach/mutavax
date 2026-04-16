@@ -434,6 +434,7 @@ async def test_alignment_run_persists_local_artifacts_and_unlocks_variant_stage(
         r1_path: Path,
         r2_path: Path,
         working_dir: Path,
+        run_dir: Path = None,
     ):
         bam_path = working_dir / f"{sample_lane.value}.aligned.bam"
         bai_path = working_dir / f"{sample_lane.value}.aligned.bam.bai"
@@ -662,6 +663,7 @@ async def test_variant_calling_run_surfaces_not_implemented_after_alignment(
         r1_path: Path,
         r2_path: Path,
         working_dir: Path,
+        run_dir: Path = None,
     ):
         bam_path = working_dir / f"{sample_lane.value}.aligned.bam"
         bai_path = working_dir / f"{sample_lane.value}.aligned.bam.bai"

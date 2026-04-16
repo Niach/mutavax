@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Check,
@@ -8,8 +8,11 @@ import {
   Cpu,
   FolderOpen,
   LoaderCircle,
+  Pause,
   Play,
   RotateCcw,
+  Square,
+  Trash2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -84,7 +87,14 @@ const METRIC_DEFINITIONS = [
   },
 ] as const;
 
-type BannerState = "waiting" | "running" | "passed" | "warning" | "failed";
+type BannerState =
+  | "waiting"
+  | "running"
+  | "passed"
+  | "warning"
+  | "failed"
+  | "cancelled"
+  | "paused";
 
 function bannerStateOf(summary: AlignmentStageSummary): BannerState {
   if (summary.status === "completed") {
@@ -93,7 +103,9 @@ function bannerStateOf(summary: AlignmentStageSummary): BannerState {
     return "passed";
   }
   if (summary.status === "running") return "running";
+  if (summary.status === "paused") return "paused";
   if (summary.status === "failed") return "failed";
+  if (summary.latestRun?.status === "cancelled") return "cancelled";
   return "waiting";
 }
 
@@ -103,9 +115,11 @@ const PILL_TONES: Record<BannerState, { label: string; bg: string; dot: string }
   passed: { label: "Passed", bg: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500" },
   warning: { label: "Warnings", bg: "bg-amber-50 text-amber-700", dot: "bg-amber-500" },
   failed: { label: "Failed", bg: "bg-rose-50 text-rose-700", dot: "bg-rose-500" },
+  cancelled: { label: "Stopped", bg: "bg-stone-100 text-stone-600", dot: "bg-stone-500" },
+  paused: { label: "Paused", bg: "bg-indigo-50 text-indigo-700", dot: "bg-indigo-500" },
 };
 
-function bannerMessage(state: BannerState, hasRun: boolean) {
+function bannerMessage(state: BannerState, hasRun: boolean, blockingReason?: string | null) {
   switch (state) {
     case "passed":
       return "Alignment finished. Quality looks good.";
@@ -115,6 +129,10 @@ function bannerMessage(state: BannerState, hasRun: boolean) {
       return "Alignment failed. Check the details below.";
     case "running":
       return "Alignment is running…";
+    case "cancelled":
+      return "Alignment was stopped. You can start a fresh run whenever you're ready.";
+    case "paused":
+      return blockingReason || "Alignment paused. Resume to continue where you left off.";
     default:
       return hasRun
         ? "Ready to run again when you are."
@@ -145,6 +163,9 @@ export default function AlignmentStagePanel({
 }: AlignmentStagePanelProps) {
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [isPausing, setIsPausing] = useState(false);
+  const [isResuming, setIsResuming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [missingTools, setMissingTools] = useState<MissingToolsError | null>(null);
   const [memoryError, setMemoryError] = useState<InsufficientMemoryError | null>(
@@ -167,11 +188,42 @@ export default function AlignmentStagePanel({
     return () => window.clearInterval(timer);
   }, [onSummaryChange, summary.status, workspace.id]);
 
+  const latestRunStatusRef = useRef<string | null>(null);
+  useEffect(() => {
+    const currentStatus = summary.latestRun?.status ?? null;
+    const prevStatus = latestRunStatusRef.current;
+    latestRunStatusRef.current = currentStatus;
+
+    if (prevStatus !== "running" || !currentStatus) return;
+    if (!["completed", "failed", "cancelled"].includes(currentStatus)) return;
+
+    const startedAt = summary.latestRun?.startedAt;
+    if (!startedAt) return;
+    const elapsedSeconds = (Date.now() - Date.parse(startedAt)) / 1000;
+    if (!isFinite(elapsedSeconds) || elapsedSeconds < 1800) return;
+
+    const desktop = getDesktopBridge();
+    if (!desktop?.notify) return;
+
+    const titleByStatus: Record<string, string> = {
+      completed: "Alignment finished",
+      failed: "Alignment failed",
+      cancelled: "Alignment stopped",
+    };
+    void desktop
+      .notify({
+        title: titleByStatus[currentStatus] ?? "Alignment update",
+        body: `${workspace.displayName} — ${formatElapsed(elapsedSeconds)}`,
+      })
+      .catch(() => {});
+  }, [summary.latestRun?.status, summary.latestRun?.startedAt, workspace.displayName]);
+
   const bannerState = bannerStateOf(summary);
   const pill = PILL_TONES[bannerState];
   const assayType = workspace.analysisProfile.assayType ?? null;
   const latestRun = summary.latestRun;
   const isRunning = summary.status === "running";
+  const isPaused = summary.status === "paused";
   const canRun =
     summary.status === "ready" ||
     summary.status === "completed" ||
@@ -232,6 +284,77 @@ export default function AlignmentStagePanel({
     }
   }
 
+  async function handleCancel() {
+    if (!latestRun || isCancelling) return;
+    if (summary.status !== "running" && summary.status !== "paused") return;
+    const confirmMsg =
+      summary.status === "paused"
+        ? "Discard paused alignment? All per-chunk progress on disk will be deleted."
+        : "Cancel alignment and discard progress? All per-chunk work will be deleted.";
+    if (!window.confirm(confirmMsg)) {
+      return;
+    }
+    setIsCancelling(true);
+    setError(null);
+    try {
+      const nextSummary = await api.cancelAlignment(workspace.id, latestRun.id);
+      onSummaryChange(nextSummary);
+    } catch (cancelError) {
+      setError(
+        cancelError instanceof Error
+          ? cancelError.message
+          : "Unable to cancel alignment."
+      );
+    } finally {
+      setIsCancelling(false);
+    }
+  }
+
+  async function handlePause() {
+    if (!latestRun || isPausing) return;
+    if (summary.status !== "running") return;
+    if (
+      !window.confirm(
+        "Stop alignment and keep progress? Per-chunk work is preserved on disk so you can resume later."
+      )
+    ) {
+      return;
+    }
+    setIsPausing(true);
+    setError(null);
+    try {
+      const nextSummary = await api.pauseAlignment(workspace.id, latestRun.id);
+      onSummaryChange(nextSummary);
+    } catch (pauseError) {
+      setError(
+        pauseError instanceof Error
+          ? pauseError.message
+          : "Unable to pause alignment."
+      );
+    } finally {
+      setIsPausing(false);
+    }
+  }
+
+  async function handleResume() {
+    if (!latestRun || isResuming) return;
+    if (summary.status !== "paused") return;
+    setIsResuming(true);
+    setError(null);
+    try {
+      const nextSummary = await api.resumeAlignment(workspace.id, latestRun.id);
+      onSummaryChange(nextSummary);
+    } catch (resumeError) {
+      setError(
+        resumeError instanceof Error
+          ? resumeError.message
+          : "Unable to resume alignment."
+      );
+    } finally {
+      setIsResuming(false);
+    }
+  }
+
   async function handleOpenArtifact(
     localPath?: string | null,
     downloadPath?: string
@@ -256,7 +379,7 @@ export default function AlignmentStagePanel({
     <div className="space-y-3" data-testid="alignment-stage-panel">
       <div className="flex flex-wrap items-center justify-between gap-3 px-1 pt-1 pb-2">
         <p className="text-sm text-stone-600">
-          {bannerMessage(bannerState, Boolean(latestRun))}
+          {bannerMessage(bannerState, Boolean(latestRun), summary.blockingReason)}
         </p>
         <span
           data-testid="alignment-stage-status-strip"
@@ -336,9 +459,16 @@ export default function AlignmentStagePanel({
                   <div className="flex items-center gap-2">
                     <LoaderCircle className="size-3.5 animate-spin" />
                     {runtimePhaseLabel(latestRun.runtimePhase)}
+                    <HeartbeatIndicator
+                      lastActivityAt={latestRun.lastActivityAt}
+                    />
                   </div>
                   <div className="flex items-center gap-2.5">
                     <ElapsedTimer startedAt={latestRun.startedAt} />
+                    <EtaDisplay
+                      etaSeconds={latestRun.etaSeconds}
+                      startedAt={latestRun.startedAt}
+                    />
                     <span className="font-mono text-[11px] text-stone-500">
                       {Math.round(latestRun.progress * 100)}%
                     </span>
@@ -352,8 +482,49 @@ export default function AlignmentStagePanel({
                     }}
                   />
                 </div>
+                <PhaseSubBars run={latestRun} />
+                <StallCallout lastActivityAt={latestRun.lastActivityAt} />
                 <MemoryHairline />
                 <ChunkProgressStrips run={latestRun} />
+                <CommandTailStrip lines={latestRun.recentLogTail} />
+              </div>
+            ) : isPaused && latestRun ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-[13px] text-stone-500">
+                  Per-chunk work is preserved on disk. Resume picks up where
+                  you left off; discard starts a fresh run.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleCancel()}
+                    disabled={isCancelling || isResuming}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-rose-300 px-3 py-1 text-[12px] font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    data-testid="alignment-discard-button"
+                  >
+                    {isCancelling ? (
+                      <LoaderCircle className="size-3 animate-spin" />
+                    ) : (
+                      <Trash2 className="size-3" />
+                    )}
+                    Discard & restart
+                  </button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="rounded-full bg-emerald-600 px-4 text-white hover:bg-emerald-500"
+                    disabled={isResuming || isCancelling}
+                    onClick={() => void handleResume()}
+                    data-testid="alignment-resume-button"
+                  >
+                    {isResuming ? (
+                      <LoaderCircle className="mr-1.5 size-3.5 animate-spin" />
+                    ) : (
+                      <Play className="mr-1.5 size-3.5" />
+                    )}
+                    Resume alignment
+                  </Button>
+                </div>
               </div>
             ) : (
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -505,6 +676,48 @@ export default function AlignmentStagePanel({
         </summary>
 
         <div className="space-y-4 border-t border-stone-100 px-5 py-4 text-[13px]">
+          {isRunning && latestRun ? (
+            <div className="space-y-2 rounded-lg border border-stone-200 bg-stone-50/40 px-3 py-2.5">
+              <div className="min-w-0">
+                <div className="text-[13px] font-medium text-stone-800">
+                  Stop this alignment
+                </div>
+                <p className="mt-0.5 text-[12px] text-stone-500">
+                  Pause to keep your progress, or discard everything to restart.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handlePause()}
+                  disabled={isPausing || isCancelling}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-rose-300 px-3 py-1 text-[12px] font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  data-testid="alignment-pause-button"
+                >
+                  {isPausing ? (
+                    <LoaderCircle className="size-3 animate-spin" />
+                  ) : (
+                    <Pause className="size-3" />
+                  )}
+                  {isPausing ? "Stopping…" : "Stop & keep progress"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleCancel()}
+                  disabled={isPausing || isCancelling}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-rose-600 px-3 py-1 text-[12px] font-medium text-white transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  data-testid="alignment-cancel-button"
+                >
+                  {isCancelling ? (
+                    <LoaderCircle className="size-3 animate-spin" />
+                  ) : (
+                    <Square className="size-3" />
+                  )}
+                  {isCancelling ? "Cancelling…" : "Cancel & discard"}
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div className="grid gap-3 sm:grid-cols-3">
             <div>
               <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-stone-400">
@@ -813,7 +1026,15 @@ function ChunkProgressStrips({ run }: { run: AlignmentRun }) {
     <div className="mt-2 space-y-1.5">
       {LANES.map((lane) => {
         const state = states[lane];
-        return <ChunkProgressStrip key={lane} lane={lane} state={state ?? null} />;
+        return (
+          <ChunkProgressStrip
+            key={lane}
+            lane={lane}
+            state={state ?? null}
+            expectedTotal={run.expectedTotalPerLane?.[lane] ?? null}
+            runStatus={run.status}
+          />
+        );
       })}
     </div>
   );
@@ -822,14 +1043,24 @@ function ChunkProgressStrips({ run }: { run: AlignmentRun }) {
 function ChunkProgressStrip({
   lane,
   state,
+  expectedTotal,
+  runStatus,
 }: {
   lane: SampleLane;
   state: ChunkProgressState | null;
+  expectedTotal: number | null;
+  runStatus: AlignmentRun["status"];
 }) {
   const total = state?.totalChunks ?? 0;
   const completed = state?.completedChunks ?? 0;
   const active = state?.activeChunks ?? 0;
   const phase = state?.phase ?? null;
+
+  // Splitting placeholder: once the run is active but no chunk has been
+  // flushed yet, show a pulsing neutral grid + expected-chunks hint instead
+  // of a meaningless em-dash. Only applies while running.
+  const isSplittingPlaceholder =
+    runStatus === "running" && total === 0 && (phase === null || phase === "splitting");
 
   const cells = total > 0 ? total : 24;
   const completedClamped = Math.min(completed, cells);
@@ -850,6 +1081,15 @@ function ChunkProgressStrip({
         >
           {PHASE_LABELS[phase]}
         </span>
+      ) : isSplittingPlaceholder ? (
+        <span
+          className={cn(
+            "inline-flex shrink-0 items-center rounded-full px-1.5 py-0 font-mono text-[9px] uppercase tracking-[0.16em]",
+            PHASE_TONES.splitting
+          )}
+        >
+          {PHASE_LABELS.splitting}
+        </span>
       ) : (
         <span className="inline-flex shrink-0 items-center rounded-full bg-stone-100 px-1.5 py-0 font-mono text-[9px] uppercase tracking-[0.16em] text-stone-400">
           Waiting
@@ -858,6 +1098,14 @@ function ChunkProgressStrip({
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <div className="flex min-w-0 flex-1 gap-[2px]">
           {Array.from({ length: cells }).map((_, index) => {
+            if (isSplittingPlaceholder) {
+              return (
+                <span
+                  key={index}
+                  className="h-1.5 flex-1 animate-pulse rounded-[1px] bg-stone-200"
+                />
+              );
+            }
             let tint = "bg-stone-200";
             if (index < completedClamped) tint = "bg-emerald-500";
             else if (index >= activeStart && index < activeEnd)
@@ -871,9 +1119,191 @@ function ChunkProgressStrip({
           })}
         </div>
         <span className="shrink-0 font-mono text-[10px] tabular-nums text-stone-500">
-          {total > 0 ? `${completed}/${total}` : "—"}
+          {total > 0
+            ? `${completed}/${total}`
+            : isSplittingPlaceholder && expectedTotal
+              ? `~${expectedTotal}`
+              : "—"}
         </span>
       </div>
+    </div>
+  );
+}
+
+function formatEta(seconds: number | null | undefined): string | null {
+  if (seconds == null || !isFinite(seconds) || seconds <= 0) return null;
+  if (seconds < 60) return "<1m";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function useNowTick(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [intervalMs]);
+  return now;
+}
+
+function EtaDisplay({
+  etaSeconds,
+  startedAt,
+}: {
+  etaSeconds?: number | null;
+  startedAt?: string | null;
+}) {
+  const now = useNowTick(5000);
+  const elapsedMs = startedAt ? now - Date.parse(startedAt) : 0;
+  const warming = !startedAt || elapsedMs < 60_000 || etaSeconds == null;
+  const formatted = warming ? "estimating ETA…" : `~${formatEta(etaSeconds)} left`;
+  if (!formatted) return null;
+  return (
+    <span className="font-mono text-[11px] tabular-nums text-stone-400">
+      {formatted}
+    </span>
+  );
+}
+
+function HeartbeatIndicator({ lastActivityAt }: { lastActivityAt?: string | null }) {
+  const now = useNowTick(5000);
+  if (!lastActivityAt) return null;
+  const elapsed = (now - Date.parse(lastActivityAt)) / 1000;
+  if (!isFinite(elapsed) || elapsed <= 90) return null;
+
+  const label = elapsed > 300 ? "No activity" : "Slow";
+  const tone = elapsed > 300 ? "bg-rose-500" : "bg-amber-500";
+  return (
+    <span
+      title={`Last activity ${Math.round(elapsed)}s ago`}
+      className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-stone-500"
+    >
+      <span className={cn("size-1.5 rounded-full", tone)} />
+      {label}
+    </span>
+  );
+}
+
+function StallCallout({ lastActivityAt }: { lastActivityAt?: string | null }) {
+  const now = useNowTick(10_000);
+  if (!lastActivityAt) return null;
+  const elapsed = (now - Date.parse(lastActivityAt)) / 1000;
+  if (!isFinite(elapsed) || elapsed <= 300) return null;
+
+  const m = Math.floor(elapsed / 60);
+  const s = Math.floor(elapsed % 60);
+  return (
+    <div
+      className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700"
+      data-testid="alignment-stall-callout"
+    >
+      <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+      <div>
+        <div className="font-medium">Pipeline appears stalled</div>
+        <p className="mt-0.5 text-rose-600">
+          No activity in {m}m {s}s. Check the technical details or stop the run
+          if it looks hung.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function PhaseSubBars({ run }: { run: AlignmentRun }) {
+  const { referencePrep, aligning, finalizing } = run.progressComponents;
+  const tumorState = run.chunkProgress?.tumor ?? null;
+  const normalState = run.chunkProgress?.normal ?? null;
+  const tumorCompleted = tumorState?.completedChunks ?? 0;
+  const tumorTotal =
+    tumorState?.totalChunks ||
+    run.expectedTotalPerLane?.tumor ||
+    0;
+  const normalCompleted = normalState?.completedChunks ?? 0;
+  const normalTotal =
+    normalState?.totalChunks ||
+    run.expectedTotalPerLane?.normal ||
+    0;
+
+  const alignLabel =
+    tumorTotal || normalTotal
+      ? `${tumorCompleted}/${tumorTotal || "?"} tumor · ${normalCompleted}/${normalTotal || "?"} normal`
+      : "preparing chunks";
+
+  const items: Array<{
+    label: string;
+    value: number;
+    detail: string;
+    active: boolean;
+  }> = [
+    {
+      label: "Reference prep",
+      value: referencePrep,
+      detail: referencePrep >= 1 ? "done" : "in progress",
+      active: run.runtimePhase === "preparing_reference",
+    },
+    {
+      label: "Aligning chunks",
+      value: aligning,
+      detail: alignLabel,
+      active: run.runtimePhase === "aligning",
+    },
+    {
+      label: "Finalizing",
+      value: finalizing,
+      detail: "merge · sort · markdup · stats",
+      active: run.runtimePhase === "finalizing",
+    },
+  ];
+
+  return (
+    <div className="space-y-1.5 pt-1">
+      {items.map((item) => (
+        <div
+          key={item.label}
+          className="flex items-center gap-2.5"
+          data-phase={item.label.toLowerCase().split(" ")[0]}
+        >
+          <span className="w-28 shrink-0 font-mono text-[10px] uppercase tracking-[0.16em] text-stone-500">
+            {item.label}
+          </span>
+          <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-stone-100">
+            <div
+              className={cn(
+                "h-full rounded-full transition-[width] duration-500",
+                item.active ? "bg-emerald-500/70" : "bg-stone-300"
+              )}
+              style={{
+                width: `${Math.max(2, Math.round(item.value * 100))}%`,
+              }}
+            />
+          </div>
+          <span className="shrink-0 font-mono text-[10px] tabular-nums text-stone-400">
+            {item.detail}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CommandTailStrip({ lines }: { lines: string[] }) {
+  if (!lines || lines.length === 0) return null;
+  return (
+    <div
+      className="mt-1 space-y-0.5 rounded-md bg-stone-50 px-2 py-1.5 font-mono text-[10px] leading-4 text-stone-500"
+      data-testid="alignment-command-tail"
+    >
+      {lines.map((line, index) => (
+        <div
+          key={index}
+          className="truncate"
+          title={line}
+        >
+          {line}
+        </div>
+      ))}
     </div>
   );
 }

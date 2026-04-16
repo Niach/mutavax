@@ -7,7 +7,6 @@ import re
 import shlex
 import shutil
 import subprocess
-import tempfile
 import threading
 import time
 import uuid
@@ -20,7 +19,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.db import session_scope
-from app.runtime import get_app_data_root, get_reference_bundle_root, load_runtime_setting
+from app.runtime import (
+    get_alignment_run_root,
+    get_app_data_root,
+    get_reference_bundle_root,
+    load_runtime_setting,
+)
+from app.services import alignment_manifest
 from app.models.records import (
     PipelineArtifactRecord,
     PipelineRunRecord,
@@ -129,6 +134,12 @@ class AlignmentArtifactDownload:
 
 
 class AlignmentArtifactNotFoundError(FileNotFoundError):
+    pass
+
+
+class AlignmentCancelledError(Exception):
+    """Raised when an alignment run is cancelled via the cancel endpoint."""
+
     pass
 
 
@@ -397,6 +408,124 @@ def parse_alignment_result_payload(
     return lane_metrics
 
 
+def compute_progress_components(
+    *,
+    status: AlignmentRunStatus,
+    runtime_phase: Optional[AlignmentRuntimePhase],
+    chunk_progress: dict[SampleLane, ChunkProgressStateResponse],
+    expected_total_per_lane: dict[str, int],
+) -> dict[str, float]:
+    """Return per-phase 0-1 floats: reference_prep, aligning, finalizing, stats.
+
+    Weights land at 5/75/15/5 in the blended calculation elsewhere; components
+    here are each on their own 0-1 scale so the UI can render sub-bars.
+    """
+    if status == AlignmentRunStatus.COMPLETED:
+        return {"reference_prep": 1.0, "aligning": 1.0, "finalizing": 1.0, "stats": 1.0}
+
+    if status in {AlignmentRunStatus.FAILED, AlignmentRunStatus.CANCELLED}:
+        return {"reference_prep": 0.0, "aligning": 0.0, "finalizing": 0.0, "stats": 0.0}
+
+    # Running/pending
+    ref_prep = 1.0 if runtime_phase in {
+        AlignmentRuntimePhase.ALIGNING,
+        AlignmentRuntimePhase.FINALIZING,
+    } else 0.0
+
+    # Aligning fraction: completed chunks / expected totals (per-lane summed).
+    total_completed = 0
+    total_expected = 0
+    for lane in (SampleLane.TUMOR, SampleLane.NORMAL):
+        state = chunk_progress.get(lane)
+        if state is not None:
+            total_completed += state.completed_chunks
+            # Prefer live total when known, fallback to expected estimate.
+            if state.total_chunks > 0:
+                total_expected += state.total_chunks
+                continue
+        expected = expected_total_per_lane.get(lane.value)
+        if expected:
+            total_expected += expected
+    aligning = (
+        min(1.0, total_completed / total_expected)
+        if total_expected > 0
+        else 0.0
+    )
+
+    finalizing = 0.0
+    stats = 0.0
+    if runtime_phase == AlignmentRuntimePhase.FINALIZING:
+        # We can't see inside markdup/index/flagstat/idxstats/stats granularly,
+        # so show finalizing as in-progress (partial) and stats as pending until
+        # completion. This avoids the synthetic 95% stall.
+        finalizing = 0.5
+        stats = 0.0
+
+    return {
+        "reference_prep": ref_prep,
+        "aligning": aligning,
+        "finalizing": finalizing,
+        "stats": stats,
+    }
+
+
+def compute_blended_progress(components: dict[str, float]) -> float:
+    return (
+        0.05 * components.get("reference_prep", 0.0)
+        + 0.75 * components.get("aligning", 0.0)
+        + 0.15 * components.get("finalizing", 0.0)
+        + 0.05 * components.get("stats", 0.0)
+    )
+
+
+def compute_eta_seconds(
+    chunk_progress: dict[SampleLane, ChunkProgressStateResponse],
+    chunk_progress_raw: dict[str, "ChunkProgressState"],
+    expected_total_per_lane: dict[str, int],
+    started_at_epoch: Optional[float],
+) -> Optional[float]:
+    """Estimate remaining seconds from recent chunk-completion rate.
+
+    Uses completion_times from the last 10 minutes; requires at least 3 chunks
+    completed in-window and at least 60 s since run start to avoid bogus
+    early estimates.
+    """
+    now = time.time()
+    if started_at_epoch is not None and now - started_at_epoch < 60:
+        return None
+
+    all_times: list[float] = []
+    for state in chunk_progress_raw.values():
+        all_times.extend(state.completion_times)
+    all_times = _trim_completion_times(all_times, now)
+    if len(all_times) < 3:
+        return None
+
+    # Rate = completions per second over the rolling window.
+    window = _ETA_WINDOW_SECONDS
+    rate_per_sec = len(all_times) / window
+    if rate_per_sec <= 0:
+        return None
+
+    total_expected = 0
+    total_completed = 0
+    for lane in (SampleLane.TUMOR, SampleLane.NORMAL):
+        state = chunk_progress.get(lane)
+        if state is not None:
+            total_completed += state.completed_chunks
+            if state.total_chunks > 0:
+                total_expected += state.total_chunks
+                continue
+        expected = expected_total_per_lane.get(lane.value)
+        if expected:
+            total_expected += expected
+    if total_expected <= 0 or total_completed >= total_expected:
+        return None
+
+    remaining = total_expected - total_completed
+    return remaining / rate_per_sec
+
+
 def serialize_alignment_run(
     record: PipelineRunRecord,
 ) -> AlignmentRunResponse:
@@ -414,10 +543,71 @@ def serialize_alignment_run(
             completed_chunks=state.completed_chunks,
             active_chunks=state.active_chunks,
         )
+
+    activity = get_run_activity_snapshot(record.id)
+    expected_total_per_lane: dict[SampleLane, int] = {}
+    if activity is not None:
+        for lane_value, count in activity.expected_total_per_lane.items():
+            try:
+                expected_total_per_lane[SampleLane(lane_value)] = count
+            except ValueError:
+                continue
+
+    status = AlignmentRunStatus(record.status)
+    runtime_phase = (
+        AlignmentRuntimePhase(record.runtime_phase) if record.runtime_phase else None
+    )
+
+    command_log_lines = record.command_log.splitlines() if record.command_log else []
+    recent_log_tail = command_log_lines[-_RECENT_LOG_TAIL_LINES:]
+
+    progress_components = compute_progress_components(
+        status=status,
+        runtime_phase=runtime_phase,
+        chunk_progress=chunk_progress,
+        expected_total_per_lane=(
+            activity.expected_total_per_lane if activity else {}
+        ),
+    )
+
+    started_at_epoch: Optional[float] = None
+    if record.started_at is not None:
+        try:
+            started_at_epoch = record.started_at.timestamp()
+        except (AttributeError, ValueError):
+            started_at_epoch = None
+
+    # Use live blended progress while running; fall back to DB progress for
+    # terminal states so the UI still reflects the stored 0 or 100 value.
+    if status in {AlignmentRunStatus.PENDING, AlignmentRunStatus.RUNNING}:
+        progress_fraction = compute_blended_progress(progress_components)
+    else:
+        progress_fraction = record.progress / 100
+
+    eta_seconds: Optional[float] = None
+    if status == AlignmentRunStatus.RUNNING:
+        eta_seconds = compute_eta_seconds(
+            chunk_progress,
+            chunk_progress_snapshot,
+            activity.expected_total_per_lane if activity else {},
+            started_at_epoch,
+        )
+
+    last_activity_at: Optional[str] = None
+    if activity is not None and status in {
+        AlignmentRunStatus.PENDING,
+        AlignmentRunStatus.RUNNING,
+    }:
+        from datetime import datetime, timezone
+
+        last_activity_at = datetime.fromtimestamp(
+            activity.last_activity_at, tz=timezone.utc
+        ).isoformat()
+
     return AlignmentRunResponse(
         id=record.id,
-        status=AlignmentRunStatus(record.status),
-        progress=record.progress / 100,
+        status=status,
+        progress=progress_fraction,
         assay_type=AnalysisAssayType(record.assay_type) if record.assay_type else None,
         reference_preset=(
             ReferencePreset(record.reference_preset)
@@ -426,11 +616,7 @@ def serialize_alignment_run(
         ),
         reference_override=record.reference_override,
         reference_label=record.reference_label,
-        runtime_phase=(
-            AlignmentRuntimePhase(record.runtime_phase)
-            if record.runtime_phase
-            else None
-        ),
+        runtime_phase=runtime_phase,
         qc_verdict=QcVerdict(record.qc_verdict) if record.qc_verdict else None,
         created_at=isoformat(record.created_at),
         updated_at=isoformat(record.updated_at),
@@ -438,7 +624,12 @@ def serialize_alignment_run(
         completed_at=isoformat(record.completed_at) if record.completed_at else None,
         blocking_reason=record.blocking_reason,
         error=record.error,
-        command_log=record.command_log.splitlines() if record.command_log else [],
+        command_log=command_log_lines,
+        recent_log_tail=recent_log_tail,
+        last_activity_at=last_activity_at,
+        eta_seconds=eta_seconds,
+        progress_components=progress_components,
+        expected_total_per_lane=expected_total_per_lane,
         lane_metrics=lane_metrics,
         chunk_progress=chunk_progress,
         artifacts=[serialize_alignment_artifact(artifact) for artifact in record.artifacts],
@@ -696,6 +887,42 @@ def build_alignment_stage_summary(
             artifacts=artifacts,
         )
 
+    if latest_run.status == AlignmentRunStatus.PAUSED.value:
+        # Summarize how far each lane got so the UI can say "X of Y chunks
+        # aligned before pause".
+        paused_reason = latest_run.blocking_reason or "Alignment paused. Resume to continue."
+        try:
+            run_dir = get_alignment_run_root(workspace.id, latest_run.id)
+            manifest = alignment_manifest.load_manifest(run_dir)
+        except Exception:
+            manifest = None
+        if manifest is not None:
+            parts: list[str] = []
+            for lane in (SampleLane.TUMOR, SampleLane.NORMAL):
+                state = manifest.lanes.get(lane.value)
+                if state is None:
+                    continue
+                done = len(state.completed_chunks)
+                total = state.total_chunks or 0
+                if total > 0:
+                    parts.append(f"{lane.value}: {done}/{total}")
+                elif done > 0:
+                    parts.append(f"{lane.value}: {done} chunks done")
+            if parts:
+                paused_reason = (
+                    "Paused at " + " · ".join(parts) + ". Resume to continue."
+                )
+        return AlignmentStageSummaryResponse(
+            workspace_id=workspace.id,
+            status=AlignmentStageStatus.PAUSED,
+            blocking_reason=paused_reason,
+            analysis_profile=analysis_profile,
+            latest_run=latest_run_response,
+            qc_verdict=latest_run_response.qc_verdict if latest_run_response else None,
+            lane_metrics=top_level_metrics,
+            artifacts=artifacts,
+        )
+
     stale_reason = stale_alignment_reason(workspace, latest_run, analysis_profile)
     if stale_reason is not None:
         return AlignmentStageSummaryResponse(
@@ -714,6 +941,20 @@ def build_alignment_stage_summary(
             workspace_id=workspace.id,
             status=AlignmentStageStatus.FAILED,
             blocking_reason=latest_run.error or latest_run.blocking_reason,
+            analysis_profile=analysis_profile,
+            latest_run=latest_run_response,
+            qc_verdict=latest_run_response.qc_verdict if latest_run_response else None,
+            lane_metrics=top_level_metrics,
+            artifacts=artifacts,
+        )
+
+    if latest_run.status == AlignmentRunStatus.CANCELLED.value:
+        # Ready to start a fresh run. Surface the cancel reason as a banner so
+        # the user knows the previous attempt was stopped deliberately.
+        return AlignmentStageSummaryResponse(
+            workspace_id=workspace.id,
+            status=AlignmentStageStatus.READY,
+            blocking_reason=latest_run.blocking_reason or "Previous run was stopped.",
             analysis_profile=analysis_profile,
             latest_run=latest_run_response,
             qc_verdict=latest_run_response.qc_verdict if latest_run_response else None,
@@ -772,6 +1013,11 @@ def create_alignment_run(
             AlignmentRunStatus.RUNNING.value,
         }:
             raise ValueError("Alignment is already running for this workspace.")
+
+        if latest_run and latest_run.status == AlignmentRunStatus.PAUSED.value:
+            raise ValueError(
+                "A paused alignment run exists for this workspace. Resume it or discard it first."
+            )
 
         stage_summary = build_alignment_stage_summary(workspace, latest_run)
         if stage_summary.status == AlignmentStageStatus.BLOCKED:
@@ -956,6 +1202,9 @@ def get_alignment_chunk_parallelism() -> int:
 
 ChunkPhase = Literal["splitting", "aligning", "merging"]
 
+_ETA_WINDOW_SECONDS = 600.0
+_RECENT_LOG_TAIL_LINES = 3
+
 
 @dataclass
 class ChunkProgressState:
@@ -963,10 +1212,28 @@ class ChunkProgressState:
     total_chunks: int = 0
     completed_chunks: int = 0
     active_chunks: int = 0
+    completion_times: list[float] = field(default_factory=list)
+
+
+@dataclass
+class RunActivityState:
+    last_activity_at: float = field(default_factory=time.time)
+    expected_total_per_lane: dict[str, int] = field(default_factory=dict)
 
 
 _chunk_progress_lock = threading.Lock()
 _chunk_progress_store: dict[str, dict[str, ChunkProgressState]] = {}
+_run_activity_store: dict[str, RunActivityState] = {}
+
+_subprocess_registry_lock = threading.Lock()
+_active_subprocesses: dict[str, list[subprocess.Popen]] = {}
+_cancelled_runs: set[str] = set()
+_paused_pending_runs: set[str] = set()
+
+
+def _trim_completion_times(times: list[float], now: Optional[float] = None) -> list[float]:
+    cutoff = (now if now is not None else time.time()) - _ETA_WINDOW_SECONDS
+    return [t for t in times if t >= cutoff]
 
 
 def record_chunk_progress(
@@ -978,14 +1245,41 @@ def record_chunk_progress(
     completed: int,
     active: int,
 ) -> None:
+    now = time.time()
     with _chunk_progress_lock:
         lane_states = _chunk_progress_store.setdefault(run_id, {})
+        previous = lane_states.get(sample_lane.value)
+        previous_completed = previous.completed_chunks if previous else 0
+        completion_times = list(previous.completion_times) if previous else []
+        # Append a timestamp for each newly-completed chunk since last call.
+        if completed > previous_completed:
+            completion_times.extend([now] * (completed - previous_completed))
+        completion_times = _trim_completion_times(completion_times, now)
         lane_states[sample_lane.value] = ChunkProgressState(
             phase=phase,
             total_chunks=total,
             completed_chunks=completed,
             active_chunks=active,
+            completion_times=completion_times,
         )
+        activity = _run_activity_store.setdefault(run_id, RunActivityState())
+        activity.last_activity_at = now
+
+
+def record_run_activity(run_id: str) -> None:
+    """Bump the last-activity timestamp for a run without changing chunk state."""
+    with _chunk_progress_lock:
+        activity = _run_activity_store.setdefault(run_id, RunActivityState())
+        activity.last_activity_at = time.time()
+
+
+def record_expected_chunk_totals(
+    run_id: str, expected_per_lane: dict[str, int]
+) -> None:
+    with _chunk_progress_lock:
+        activity = _run_activity_store.setdefault(run_id, RunActivityState())
+        activity.expected_total_per_lane.update(expected_per_lane)
+        activity.last_activity_at = time.time()
 
 
 def get_chunk_progress_snapshot(run_id: str) -> dict[str, ChunkProgressState]:
@@ -993,12 +1287,133 @@ def get_chunk_progress_snapshot(run_id: str) -> dict[str, ChunkProgressState]:
         lane_states = _chunk_progress_store.get(run_id)
         if not lane_states:
             return {}
-        return {lane: ChunkProgressState(**state.__dict__) for lane, state in lane_states.items()}
+        return {
+            lane: ChunkProgressState(
+                phase=state.phase,
+                total_chunks=state.total_chunks,
+                completed_chunks=state.completed_chunks,
+                active_chunks=state.active_chunks,
+                completion_times=list(state.completion_times),
+            )
+            for lane, state in lane_states.items()
+        }
+
+
+def get_run_activity_snapshot(run_id: str) -> Optional[RunActivityState]:
+    with _chunk_progress_lock:
+        activity = _run_activity_store.get(run_id)
+        if activity is None:
+            return None
+        return RunActivityState(
+            last_activity_at=activity.last_activity_at,
+            expected_total_per_lane=dict(activity.expected_total_per_lane),
+        )
 
 
 def clear_chunk_progress(run_id: str) -> None:
     with _chunk_progress_lock:
         _chunk_progress_store.pop(run_id, None)
+        _run_activity_store.pop(run_id, None)
+
+
+def register_subprocess(run_id: str, proc: subprocess.Popen) -> None:
+    with _subprocess_registry_lock:
+        _active_subprocesses.setdefault(run_id, []).append(proc)
+
+
+def unregister_subprocess(run_id: str, proc: subprocess.Popen) -> None:
+    with _subprocess_registry_lock:
+        procs = _active_subprocesses.get(run_id)
+        if not procs:
+            return
+        try:
+            procs.remove(proc)
+        except ValueError:
+            pass
+        if not procs:
+            _active_subprocesses.pop(run_id, None)
+
+
+def clear_subprocess_registry(run_id: str) -> None:
+    with _subprocess_registry_lock:
+        _active_subprocesses.pop(run_id, None)
+
+
+def mark_run_cancelled(run_id: str) -> None:
+    with _subprocess_registry_lock:
+        _cancelled_runs.add(run_id)
+
+
+def clear_run_cancelled(run_id: str) -> None:
+    with _subprocess_registry_lock:
+        _cancelled_runs.discard(run_id)
+
+
+def is_run_cancelled(run_id: str) -> bool:
+    with _subprocess_registry_lock:
+        return run_id in _cancelled_runs
+
+
+def mark_run_paused_pending(run_id: str) -> None:
+    """Signal the worker to stop AND preserve on-disk state.
+
+    Sets both the cancel flag (so the worker's kill path fires) and a
+    separate paused-pending flag so the worker knows to mark the run PAUSED
+    instead of CANCELLED on its way out.
+    """
+    with _subprocess_registry_lock:
+        _cancelled_runs.add(run_id)
+        _paused_pending_runs.add(run_id)
+
+
+def clear_run_paused_pending(run_id: str) -> None:
+    with _subprocess_registry_lock:
+        _paused_pending_runs.discard(run_id)
+
+
+def is_run_paused_pending(run_id: str) -> bool:
+    with _subprocess_registry_lock:
+        return run_id in _paused_pending_runs
+
+
+def terminate_run_subprocesses(run_id: str, *, grace_seconds: float = 5.0) -> int:
+    """SIGTERM all registered Popens for run_id, then SIGKILL survivors.
+
+    Returns number of subprocesses actioned.
+    """
+    with _subprocess_registry_lock:
+        procs = list(_active_subprocesses.get(run_id, []))
+
+    terminated = 0
+    for proc in procs:
+        if proc.poll() is not None:
+            continue
+        try:
+            proc.terminate()
+            terminated += 1
+        except Exception:
+            pass
+
+    deadline = time.time() + grace_seconds
+    for proc in procs:
+        remaining = max(0.0, deadline - time.time())
+        if proc.poll() is not None:
+            continue
+        try:
+            proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=2.0)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    return terminated
 
 
 def _spawn_split_subprocess(
@@ -1007,6 +1422,7 @@ def _spawn_split_subprocess(
     r2_path: Path,
     chunk_dir: Path,
     reads_per_chunk: int,
+    run_id: Optional[str] = None,
 ) -> tuple[list[subprocess.Popen], list[str]]:
     """Launch pigz|split chains for R1 and R2 in the background, non-blocking.
 
@@ -1062,6 +1478,10 @@ def _spawn_split_subprocess(
                 proc.wait()
         raise
 
+    if run_id is not None:
+        for proc in procs:
+            register_subprocess(run_id, proc)
+
     return procs, [quote_command(cmd) for cmd in commands]
 
 
@@ -1071,6 +1491,7 @@ def split_paired_fastq_into_chunks(
     r2_path: Path,
     chunk_dir: Path,
     reads_per_chunk: int,
+    run_id: Optional[str] = None,
 ) -> tuple[list[tuple[Path, Path]], list[str]]:
     """Split paired gzipped FASTQ into chunks of reads_per_chunk pairs each.
 
@@ -1083,11 +1504,14 @@ def split_paired_fastq_into_chunks(
         r2_path=r2_path,
         chunk_dir=chunk_dir,
         reads_per_chunk=reads_per_chunk,
+        run_id=run_id,
     )
 
     try:
         for proc in procs:
             rc = proc.wait()
+            if run_id is not None:
+                unregister_subprocess(run_id, proc)
             if rc != 0:
                 raise RuntimeError(
                     f"FASTQ split failed (rc={rc}): command={proc.args!r}"
@@ -1097,6 +1521,8 @@ def split_paired_fastq_into_chunks(
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            if run_id is not None:
+                unregister_subprocess(run_id, proc)
         raise
 
     r1_chunks = sorted(chunk_dir.glob("r1_*.fastq.gz"))
@@ -1123,7 +1549,12 @@ def _align_single_chunk(
     aligner_threads: int,
     sort_threads: int,
     sort_memory: str,
+    run_id: Optional[str] = None,
 ) -> list[str]:
+    # Sort writes into a .partial sibling so partial files from a killed run
+    # are always distinguishable from clean completed chunks. Final rename
+    # only happens on clean subprocess exit.
+    partial_path = output_path.with_suffix(output_path.suffix + ".partial")
     aligner_stderr_path = output_path.with_suffix(output_path.suffix + ".strobealign.stderr.log")
     fixmate_stderr_path = output_path.with_suffix(output_path.suffix + ".fixmate.stderr.log")
     sort_stderr_path = output_path.with_suffix(output_path.suffix + ".samtools-sort.stderr.log")
@@ -1158,7 +1589,7 @@ def _align_single_chunk(
         "-T",
         str(sort_tmp_prefix),
         "-o",
-        str(output_path),
+        str(partial_path),
     ]
 
     procs: list[subprocess.Popen] = []
@@ -1172,6 +1603,8 @@ def _align_single_chunk(
                 stderr=aligner_stderr_handle,
             )
             procs.append(aligner_proc)
+            if run_id is not None:
+                register_subprocess(run_id, aligner_proc)
 
             fixmate_proc = subprocess.Popen(
                 fixmate_command,
@@ -1180,6 +1613,8 @@ def _align_single_chunk(
                 stderr=fixmate_stderr_handle,
             )
             procs.append(fixmate_proc)
+            if run_id is not None:
+                register_subprocess(run_id, fixmate_proc)
             assert aligner_proc.stdout is not None
             aligner_proc.stdout.close()
 
@@ -1190,6 +1625,8 @@ def _align_single_chunk(
                 stderr=sort_stderr_handle,
             )
             procs.append(sort_proc)
+            if run_id is not None:
+                register_subprocess(run_id, sort_proc)
             assert fixmate_proc.stdout is not None
             fixmate_proc.stdout.close()
 
@@ -1201,8 +1638,16 @@ def _align_single_chunk(
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+        # Clean up the partial BAM so watchers don't mistake it for a real one.
+        try:
+            partial_path.unlink()
+        except OSError:
+            pass
         raise
     finally:
+        if run_id is not None:
+            for proc in procs:
+                unregister_subprocess(run_id, proc)
         for leftover in sort_tmp_prefix.parent.glob(f"{sort_tmp_prefix.name}.*.bam"):
             try:
                 leftover.unlink()
@@ -1211,19 +1656,35 @@ def _align_single_chunk(
 
     if aligner_returncode != 0:
         aligner_text = aligner_stderr_path.read_text(errors="replace").strip()
+        try:
+            partial_path.unlink()
+        except OSError:
+            pass
         raise RuntimeError(
             f"strobealign failed (rc={aligner_returncode}): {aligner_text or '<empty>'}"
         )
     if fixmate_returncode != 0:
         fixmate_text = fixmate_stderr_path.read_text(errors="replace").strip()
+        try:
+            partial_path.unlink()
+        except OSError:
+            pass
         raise RuntimeError(
             f"samtools fixmate failed (rc={fixmate_returncode}): {fixmate_text or '<empty>'}"
         )
     if sort_returncode != 0:
         sort_text = sort_stderr_path.read_text(errors="replace").strip()
+        try:
+            partial_path.unlink()
+        except OSError:
+            pass
         raise RuntimeError(
             f"samtools sort failed (rc={sort_returncode}): {sort_text or '<empty>'}"
         )
+
+    # Atomic rename — partial → final. If the rename fails (rare), the partial
+    # remains and the caller can decide to retry.
+    partial_path.replace(output_path)
 
     return [
         quote_command(aligner_command),
@@ -1245,15 +1706,30 @@ def _chunk_ready_watcher(
     on_split_complete: Callable[[int], None],
     on_chunk_discovered: Callable[[int], None],
     stop_event: threading.Event,
+    run_id: Optional[str] = None,
+    skip_indices: Optional[set[int]] = None,
+    split_already_complete: bool = False,
 ) -> None:
     """Poll chunk_dir for newly finished (r1_i, r2_i) pairs and enqueue them.
 
     A chunk is considered complete when both r1_i.fastq.gz and r2_i.fastq.gz
     exist and have been size-stable for one poll cycle. When all split procs
     exit, does one final sweep and pushes `parallelism` sentinel None values.
+
+    Resume support:
+      * ``skip_indices`` — chunk indices already aligned (have a final BAM);
+        discovered but not enqueued.
+      * ``split_already_complete`` — if True, we treat the existing chunk_dir
+        contents as the full set and never wait on split_procs. ``split_procs``
+        may be an empty list in that case.
     """
-    seen_complete: set[int] = set()
+    skip_indices = set(skip_indices or ())
+    seen_complete: set[int] = set(skip_indices)
     candidate_sizes: dict[int, tuple[int, int]] = {}
+    # `split_done` guards the final-sweep + sentinel push; it must start
+    # False even on resume so we still do one sweep of the existing chunk
+    # files. The `split_already_complete` flag tells us split_procs is empty
+    # and all_split_exited should be treated as True from the first poll.
     split_done = False
 
     while True:
@@ -1274,11 +1750,21 @@ def _chunk_ready_watcher(
         except FileNotFoundError:
             pass
 
-        split_exit_rcs = [proc.poll() for proc in split_procs]
-        all_split_exited = all(rc is not None for rc in split_exit_rcs)
+        if split_already_complete:
+            split_exit_rcs: list[Optional[int]] = []
+            all_split_exited = True
+        else:
+            split_exit_rcs = [proc.poll() for proc in split_procs]
+            all_split_exited = all(rc is not None for rc in split_exit_rcs)
 
         for idx in sorted(r1_entries):
             if idx in seen_complete:
+                continue
+            if idx in skip_indices:
+                # Chunk already has a final BAM — emit a discovery so
+                # progress math knows about it, but don't enqueue.
+                on_chunk_discovered(idx)
+                seen_complete.add(idx)
                 continue
             r1_chunk = r1_entries[idx]
             r2_chunk = r2_entries.get(idx)
@@ -1310,17 +1796,29 @@ def _chunk_ready_watcher(
 
         if all_split_exited and not split_done:
             split_done = True
+            # Drop split procs from the cancel registry — they're done.
+            if run_id is not None:
+                for proc in split_procs:
+                    unregister_subprocess(run_id, proc)
             # Check split return codes
             for rc, proc in zip(split_exit_rcs, split_procs):
                 if rc != 0:
                     raise RuntimeError(
                         f"FASTQ split failed (rc={rc}): command={proc.args!r}"
                     )
-            on_split_complete(len(r1_entries))
+            # When split_already_complete is True, the real total is the union
+            # of existing FASTQs plus already-aligned chunks (whose FASTQs were
+            # deleted post-alignment on the previous run).
+            total_observed = len(set(r1_entries) | skip_indices)
+            on_split_complete(total_observed)
 
             # One final sweep — catch any chunk we haven't enqueued yet
             for idx in sorted(r1_entries):
                 if idx in seen_complete:
+                    continue
+                if idx in skip_indices:
+                    on_chunk_discovered(idx)
+                    seen_complete.add(idx)
                     continue
                 r1_chunk = r1_entries[idx]
                 r2_chunk = r2_entries.get(idx)
@@ -1355,6 +1853,9 @@ def run_chunked_strobealign_pipeline(
     sort_memory_per_chunk: str,
     on_progress: Optional[Callable[[ChunkPhase, int, int, int], None]] = None,
     chunk_queue_buffer: int = 2,
+    run_id: Optional[str] = None,
+    run_dir: Optional[Path] = None,
+    lane_value: Optional[str] = None,
 ) -> list[str]:
     """Chunked strobealign alignment orchestrator with producer/consumer overlap.
 
@@ -1364,10 +1865,65 @@ def run_chunked_strobealign_pipeline(
     queue and runs `_align_single_chunk`. Once all chunks finish, merges the
     per-chunk coord-sorted BAMs into output_path.
 
+    Resume support:
+      * If ``run_dir`` + ``lane_value`` are provided and the manifest for this
+        lane shows ``split_status == "completed"``, skip the split entirely
+        and enumerate existing chunk FASTQs + final BAMs from disk.
+      * Any ``chunk_NNNN.coord-sorted.bam.partial`` files are deleted on entry
+        — they represent interrupted work from a previous run.
+
     Returns the flat command log (split + per-chunk pipelines + merge).
     """
     chunk_dir.mkdir(parents=True, exist_ok=True)
     commands: list[str] = []
+
+    manifest_available = run_dir is not None and lane_value is not None
+
+    # Clean up any .partial BAMs from a previous interrupted run — those are
+    # never trusted. Any matching r1_/r2_ FASTQ pairs stay; the watcher will
+    # replay the alignment.
+    for partial in chunk_dir.glob("chunk_*.coord-sorted.bam.partial"):
+        try:
+            partial.unlink()
+        except OSError:
+            pass
+
+    # Determine what existing work can be reused from the manifest.
+    skip_indices: set[int] = set()
+    split_already_complete = False
+    if manifest_available:
+        manifest_run_dir = run_dir  # for mypy
+        assert manifest_run_dir is not None
+        skip_indices = alignment_manifest.completed_chunk_indices(
+            manifest_run_dir, lane_value  # type: ignore[arg-type]
+        )
+        split_already_complete = (
+            alignment_manifest.lane_split_status(
+                manifest_run_dir, lane_value  # type: ignore[arg-type]
+            )
+            == "completed"
+        )
+
+    # If the split was interrupted mid-stream (status != "completed" and not
+    # "pending" either — i.e., previously "running"), wipe any partial chunk
+    # FASTQs for indices we haven't already aligned. Aligned chunks had their
+    # FASTQ deleted post-alignment; their BAM is on disk and skip_indices
+    # covers them.
+    if manifest_available and not split_already_complete:
+        for path in list(chunk_dir.glob("r1_*.fastq.gz")) + list(
+            chunk_dir.glob("r2_*.fastq.gz")
+        ):
+            match = re.match(r"^r[12]_(\d{4})\.fastq\.gz$", path.name)
+            if not match:
+                continue
+            idx = int(match.group(1))
+            if idx in skip_indices:
+                # Shouldn't happen (aligned chunks have no FASTQ) but be safe.
+                continue
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
     def _emit(phase: ChunkPhase, total: int, completed: int, active: int) -> None:
         if on_progress is not None:
@@ -1378,13 +1934,24 @@ def run_chunked_strobealign_pipeline(
 
     _emit("splitting", 0, 0, 0)
 
-    split_procs, split_commands = _spawn_split_subprocess(
-        r1_path=r1_path,
-        r2_path=r2_path,
-        chunk_dir=chunk_dir,
-        reads_per_chunk=chunk_reads,
-    )
-    commands.extend(split_commands)
+    if manifest_available and run_dir is not None and lane_value is not None:
+        alignment_manifest.mark_split_status(run_dir, lane_value, "running")
+
+    # Skip the pigz|split invocation entirely when the manifest says split
+    # was already completed on a previous run. This is the common resume path
+    # — the existing chunk FASTQs stay on disk for not-yet-aligned chunks.
+    split_procs: list[subprocess.Popen] = []
+    if split_already_complete:
+        commands.append("# split: skipped (already completed on previous run)")
+    else:
+        split_procs, split_commands = _spawn_split_subprocess(
+            r1_path=r1_path,
+            r2_path=r2_path,
+            chunk_dir=chunk_dir,
+            reads_per_chunk=chunk_reads,
+            run_id=run_id,
+        )
+        commands.extend(split_commands)
 
     chunk_queue: "queue.Queue[Optional[tuple[int, Path, Path]]]" = queue.Queue(
         maxsize=max(1, parallelism) + max(0, chunk_queue_buffer)
@@ -1414,6 +1981,10 @@ def run_chunked_strobealign_pipeline(
                 completed_count,
                 active_count,
             )
+        if manifest_available and run_dir is not None and lane_value is not None:
+            alignment_manifest.mark_split_status(
+                run_dir, lane_value, "completed", total_chunks=final_count
+            )
 
     watcher_error: list[BaseException] = []
 
@@ -1427,6 +1998,9 @@ def run_chunked_strobealign_pipeline(
                 on_split_complete=_on_split_complete,
                 on_chunk_discovered=_on_chunk_discovered,
                 stop_event=stop_event,
+                run_id=run_id,
+                skip_indices=skip_indices,
+                split_already_complete=split_already_complete,
             )
         except BaseException as error:
             watcher_error.append(error)
@@ -1439,6 +2013,25 @@ def run_chunked_strobealign_pipeline(
 
     watcher_thread = threading.Thread(target=_watcher_wrapper, daemon=True)
     watcher_thread.start()
+
+    def _cancel_poller() -> None:
+        if run_id is None:
+            return
+        while not stop_event.is_set():
+            if is_run_cancelled(run_id):
+                stop_event.set()
+                for _ in range(max(1, parallelism)):
+                    try:
+                        chunk_queue.put_nowait(None)
+                    except queue.Full:
+                        pass
+                return
+            time.sleep(0.5)
+
+    cancel_thread: Optional[threading.Thread] = None
+    if run_id is not None:
+        cancel_thread = threading.Thread(target=_cancel_poller, daemon=True)
+        cancel_thread.start()
 
     def _worker() -> None:
         nonlocal completed_count, active_count
@@ -1471,10 +2064,21 @@ def run_chunked_strobealign_pipeline(
                     aligner_threads=aligner_threads_per_chunk,
                     sort_threads=sort_threads_per_chunk,
                     sort_memory=sort_memory_per_chunk,
+                    run_id=run_id,
                 )
                 with progress_lock:
                     chunk_commands_by_idx[idx] = cmds
                     chunk_bam_by_idx[idx] = chunk_bam
+                # Persist completion to the manifest for resume.
+                if manifest_available and run_dir is not None and lane_value is not None:
+                    try:
+                        alignment_manifest.mark_chunk_complete(
+                            run_dir, lane_value, idx
+                        )
+                    except Exception:
+                        # Manifest write failure is non-fatal; next chunk will
+                        # re-persist the set and catch up.
+                        pass
                 for chunk_fastq in (r1_chunk, r2_chunk):
                     try:
                         chunk_fastq.unlink()
@@ -1491,6 +2095,13 @@ def run_chunked_strobealign_pipeline(
                         completed_count,
                         active_count,
                     )
+
+    # Seed chunk_bam_by_idx with previously-aligned chunks so merge includes them.
+    for idx in skip_indices:
+        existing_bam = chunk_dir / f"chunk_{idx:04d}.coord-sorted.bam"
+        if existing_bam.exists():
+            chunk_bam_by_idx[idx] = existing_bam
+            completed_count += 1
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, parallelism)) as executor:
@@ -1516,12 +2127,23 @@ def run_chunked_strobealign_pipeline(
                     proc.wait()
                 except Exception:
                     pass
-        for leftover in chunk_dir.glob("chunk_*.coord-sorted.bam*"):
+            if run_id is not None:
+                unregister_subprocess(run_id, proc)
+        # Only wipe partial BAMs — final (fully-aligned) chunks are resume
+        # state and must be preserved when the failure is a cancel/pause.
+        for leftover in chunk_dir.glob("chunk_*.coord-sorted.bam.partial"):
             try:
                 leftover.unlink()
             except OSError:
                 pass
         raise
+    finally:
+        stop_event.set()
+        if cancel_thread is not None:
+            cancel_thread.join(timeout=1.0)
+
+    if run_id is not None and is_run_cancelled(run_id):
+        raise AlignmentCancelledError("Alignment run was cancelled.")
 
     # Emit deterministic command log order
     for idx in sorted(chunk_commands_by_idx):
@@ -1545,20 +2167,55 @@ def run_chunked_strobealign_pipeline(
         str(output_path),
         *[str(path) for path in chunk_bams],
     ]
-    merge_stderr_path = output_path.with_suffix(output_path.suffix + ".samtools-merge.stderr.log")
-    with merge_stderr_path.open("wb") as merge_stderr_handle:
-        merge_proc = subprocess.run(
-            merge_command,
-            stdout=subprocess.DEVNULL,
-            stderr=merge_stderr_handle,
-        )
-    if merge_proc.returncode != 0:
-        merge_text = merge_stderr_path.read_text(errors="replace").strip()
-        raise RuntimeError(
-            f"samtools merge failed (rc={merge_proc.returncode}): {merge_text or '<empty>'}"
-        )
-    commands.append(quote_command(merge_command))
 
+    # Idempotency: if a final merged BAM from a previous run exists, skip
+    # the merge entirely. Otherwise, run merge to a .partial sibling and
+    # rename atomically on clean exit.
+    if output_path.exists() and output_path.stat().st_size > 0:
+        commands.append("# merge: skipped (output already present)")
+    else:
+        merge_partial = output_path.with_suffix(output_path.suffix + ".partial")
+        try:
+            merge_partial.unlink()
+        except OSError:
+            pass
+        merge_command_partial = [
+            part if part != str(output_path) else str(merge_partial)
+            for part in merge_command
+        ]
+        merge_stderr_path = output_path.with_suffix(
+            output_path.suffix + ".samtools-merge.stderr.log"
+        )
+        with merge_stderr_path.open("wb") as merge_stderr_handle:
+            merge_popen = subprocess.Popen(
+                merge_command_partial,
+                stdout=subprocess.DEVNULL,
+                stderr=merge_stderr_handle,
+            )
+            if run_id is not None:
+                register_subprocess(run_id, merge_popen)
+            try:
+                merge_rc = merge_popen.wait()
+            finally:
+                if run_id is not None:
+                    unregister_subprocess(run_id, merge_popen)
+        if merge_rc != 0:
+            try:
+                merge_partial.unlink()
+            except OSError:
+                pass
+            if run_id is not None and is_run_cancelled(run_id):
+                raise AlignmentCancelledError("Alignment run was cancelled during merge.")
+            merge_text = merge_stderr_path.read_text(errors="replace").strip()
+            raise RuntimeError(
+                f"samtools merge failed (rc={merge_rc}): {merge_text or '<empty>'}"
+            )
+        merge_partial.replace(output_path)
+        commands.append(quote_command(merge_command))
+
+    # Merge succeeded: chunk BAMs are no longer needed. Delete them along
+    # with their stderr sidecar logs so the chunks/ dir can be wiped cleanly
+    # on final success.
     for chunk_bam in chunk_bams:
         try:
             chunk_bam.unlink()
@@ -1641,6 +2298,7 @@ def execute_alignment_lane(
     r1_path: Path,
     r2_path: Path,
     working_dir: Path,
+    run_dir: Optional[Path] = None,
 ) -> LaneExecutionOutput:
     aligner_binary = os.getenv("ALIGNMENT_STROBEALIGN_BINARY", "strobealign")
     samtools_binary = os.getenv("SAMTOOLS_BINARY", "samtools")
@@ -1658,6 +2316,21 @@ def execute_alignment_lane(
     aligner_threads_per_chunk = max(
         1, get_aligner_thread_count() // max(1, parallelism)
     )
+    chunk_reads = get_alignment_chunk_reads()
+
+    # Estimate chunks cheaply from R1 size so the UI can show "expected ~N chunks"
+    # during the splitting window. Rough: gzipped FASTQ ≈ 40 B per read pair (gzipped),
+    # so chunk_size_bytes ≈ reads_per_chunk * 40. Real ratio varies, so this is a
+    # coarse-but-honest hint, not a hard commitment.
+    try:
+        r1_size = r1_path.stat().st_size
+        bytes_per_read_pair_gz = 40
+        estimated_chunks = max(
+            1, round(r1_size / (chunk_reads * bytes_per_read_pair_gz))
+        )
+        record_expected_chunk_totals(run_id, {sample_lane.value: estimated_chunks})
+    except OSError:
+        pass
 
     def _on_progress(phase: ChunkPhase, total: int, completed: int, active: int) -> None:
         record_chunk_progress(
@@ -1678,71 +2351,111 @@ def execute_alignment_lane(
         aligner_binary=aligner_binary,
         samtools_binary=samtools_binary,
         chunk_dir=chunk_dir,
-        chunk_reads=get_alignment_chunk_reads(),
+        chunk_reads=chunk_reads,
         parallelism=parallelism,
         aligner_threads_per_chunk=aligner_threads_per_chunk,
         sort_threads_per_chunk=get_samtools_sort_thread_count(),
         sort_memory_per_chunk=get_samtools_sort_memory(),
         on_progress=_on_progress,
+        run_id=run_id,
+        run_dir=run_dir,
+        lane_value=sample_lane.value,
     )
 
     samtools_threads_str = str(get_samtools_thread_count())
 
-    markdup_command = [
-        samtools_binary,
-        "markdup",
-        "-@",
-        samtools_threads_str,
-        str(coordinate_bam),
-        str(final_bam),
-    ]
-    run_command(markdup_command)
-    command_log.append(quote_command(markdup_command))
+    # Finalize steps below are made idempotent for resume: if the final output
+    # already exists (from a prior interrupted run), skip re-running. Each
+    # writes to a .partial sibling where supported and renames on success.
 
-    index_command = [
-        samtools_binary,
-        "index",
-        "-@",
-        samtools_threads_str,
-        str(final_bam),
-    ]
-    run_command(index_command)
-    command_log.append(quote_command(index_command))
+    if not final_bam.exists():
+        markdup_partial = final_bam.with_suffix(final_bam.suffix + ".partial")
+        try:
+            markdup_partial.unlink()
+        except OSError:
+            pass
+        markdup_command = [
+            samtools_binary,
+            "markdup",
+            "-@",
+            samtools_threads_str,
+            str(coordinate_bam),
+            str(markdup_partial),
+        ]
+        run_command(markdup_command)
+        markdup_partial.replace(final_bam)
+        command_log.append(quote_command(markdup_command))
+
+    if not final_bai.exists():
+        # samtools index writes the .bai alongside the BAM — no native
+        # partial/rename support, but the whole-file write completes in seconds
+        # and re-running is safe.
+        index_command = [
+            samtools_binary,
+            "index",
+            "-@",
+            samtools_threads_str,
+            str(final_bam),
+        ]
+        run_command(index_command)
+        command_log.append(quote_command(index_command))
 
     flagstat_command = [samtools_binary, "flagstat", str(final_bam)]
-    flagstat_result = subprocess.run(
-        flagstat_command,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    flagstat_path.write_text(flagstat_result.stdout)
+    if flagstat_path.exists() and flagstat_path.stat().st_size > 0:
+        flagstat_stdout = flagstat_path.read_text()
+    else:
+        flagstat_result = subprocess.run(
+            flagstat_command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        flagstat_stdout = flagstat_result.stdout
+        flagstat_partial = flagstat_path.with_suffix(
+            flagstat_path.suffix + ".partial"
+        )
+        flagstat_partial.write_text(flagstat_stdout)
+        flagstat_partial.replace(flagstat_path)
     command_log.append(quote_command(flagstat_command))
 
     idxstats_command = [samtools_binary, "idxstats", str(final_bam)]
-    idxstats_result = subprocess.run(
-        idxstats_command,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    idxstats_path.write_text(idxstats_result.stdout)
+    if idxstats_path.exists() and idxstats_path.stat().st_size > 0:
+        idxstats_stdout = idxstats_path.read_text()
+    else:
+        idxstats_result = subprocess.run(
+            idxstats_command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        idxstats_stdout = idxstats_result.stdout
+        idxstats_partial = idxstats_path.with_suffix(
+            idxstats_path.suffix + ".partial"
+        )
+        idxstats_partial.write_text(idxstats_stdout)
+        idxstats_partial.replace(idxstats_path)
     command_log.append(quote_command(idxstats_command))
 
     stats_command = [samtools_binary, "stats", str(final_bam)]
-    stats_result = subprocess.run(
-        stats_command,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    stats_path.write_text(stats_result.stdout)
+    if stats_path.exists() and stats_path.stat().st_size > 0:
+        stats_stdout = stats_path.read_text()
+    else:
+        stats_result = subprocess.run(
+            stats_command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        stats_stdout = stats_result.stdout
+        stats_partial = stats_path.with_suffix(stats_path.suffix + ".partial")
+        stats_partial.write_text(stats_stdout)
+        stats_partial.replace(stats_path)
     command_log.append(quote_command(stats_command))
 
     total_reads, mapped_reads, mapped_percent, properly_paired_percent = parse_flagstat(
-        flagstat_result.stdout
+        flagstat_stdout
     )
-    duplicate_percent, mean_insert_size = parse_stats(stats_result.stdout)
+    duplicate_percent, mean_insert_size = parse_stats(stats_stdout)
 
     return LaneExecutionOutput(
         sample_lane=sample_lane,
@@ -1827,17 +2540,17 @@ def upload_alignment_artifacts(
     run_id: str,
     lane_outputs: list[LaneExecutionOutput],
 ) -> list[PipelineArtifactRecord]:
+    """Create PipelineArtifactRecord rows for the per-lane output files.
+
+    Since Phase B runs alignment directly under the persistent run dir,
+    artifact files are already at their final location — this function only
+    creates DB rows, no file copy.
+    """
     timestamp = utc_now()
     artifacts: list[PipelineArtifactRecord] = []
 
     for output in lane_outputs:
         for artifact_kind, artifact_path in output.artifact_paths.items():
-            local_path = managed_alignment_artifact_path(
-                workspace_id,
-                run_id,
-                output.sample_lane,
-                artifact_path.name,
-            )
             content_type = (
                 "text/plain"
                 if artifact_kind
@@ -1848,8 +2561,6 @@ def upload_alignment_artifacts(
                 }
                 else "application/octet-stream"
             )
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(artifact_path, local_path)
             artifacts.append(
                 PipelineArtifactRecord(
                     id=str(uuid.uuid4()),
@@ -1859,10 +2570,10 @@ def upload_alignment_artifacts(
                     artifact_kind=artifact_kind.value,
                     sample_lane=output.sample_lane.value,
                     filename=artifact_path.name,
-                    storage_key=str(local_path),
-                    local_path=str(local_path),
+                    storage_key=str(artifact_path),
+                    local_path=str(artifact_path),
                     content_type=content_type,
-                    size_bytes=local_path.stat().st_size,
+                    size_bytes=artifact_path.stat().st_size,
                     created_at=timestamp,
                 )
             )
@@ -1968,11 +2679,165 @@ def update_alignment_run_progress(
         session.add(run.workspace)
 
 
+def mark_alignment_run_cancelled(
+    workspace_id: str,
+    run_id: str,
+    reason: str = "Stopped by user.",
+) -> None:
+    with session_scope() as session:
+        run = get_alignment_run_record(session, workspace_id, run_id)
+        run.status = AlignmentRunStatus.CANCELLED.value
+        run.progress = 0
+        run.runtime_phase = None
+        run.blocking_reason = reason
+        run.error = None
+        run.updated_at = utc_now()
+        run.completed_at = run.updated_at
+        run.workspace.updated_at = run.updated_at
+        session.add(run)
+        session.add(run.workspace)
+
+
+def mark_alignment_run_paused(
+    workspace_id: str,
+    run_id: str,
+    reason: str = "Paused by user. Resume to continue.",
+) -> None:
+    with session_scope() as session:
+        run = get_alignment_run_record(session, workspace_id, run_id)
+        run.status = AlignmentRunStatus.PAUSED.value
+        # Keep progress snapshot so the UI can surface how far we got.
+        run.runtime_phase = None
+        run.blocking_reason = reason
+        run.error = None
+        run.updated_at = utc_now()
+        # Not completed — leave completed_at null.
+        run.workspace.updated_at = run.updated_at
+        session.add(run)
+        session.add(run.workspace)
+
+
+def _wipe_alignment_run_dir(workspace_id: str, run_id: str) -> None:
+    """Remove the persistent per-run directory + all chunk/artifact files."""
+    try:
+        run_dir = get_alignment_run_root(workspace_id, run_id)
+    except Exception:
+        return
+    if run_dir.exists():
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def cancel_alignment_run(workspace_id: str, run_id: str) -> AlignmentStageSummaryResponse:
+    """Cancel & discard: kill subprocesses, mark CANCELLED, wipe run dir.
+
+    This is the destructive terminal action — resume is not possible afterward.
+    For a resumable stop, use ``pause_alignment_run`` instead.
+    """
+    with session_scope() as session:
+        run = get_alignment_run_record(session, workspace_id, run_id)
+        if run.status not in {
+            AlignmentRunStatus.PENDING.value,
+            AlignmentRunStatus.RUNNING.value,
+            AlignmentRunStatus.PAUSED.value,
+        }:
+            return load_alignment_stage_summary(workspace_id)
+        was_paused = run.status == AlignmentRunStatus.PAUSED.value
+
+    if was_paused:
+        # Nothing running — just mark cancelled and wipe the dir.
+        mark_alignment_run_cancelled(workspace_id, run_id)
+        _wipe_alignment_run_dir(workspace_id, run_id)
+        return load_alignment_stage_summary(workspace_id)
+
+    mark_run_cancelled(run_id)
+    terminate_run_subprocesses(run_id)
+    mark_alignment_run_cancelled(workspace_id, run_id)
+    _wipe_alignment_run_dir(workspace_id, run_id)
+    return load_alignment_stage_summary(workspace_id)
+
+
+def pause_alignment_run(workspace_id: str, run_id: str) -> AlignmentStageSummaryResponse:
+    """Stop & keep progress: kill subprocesses, mark PAUSED, keep run dir.
+
+    Chunk BAMs + manifest persist on disk. A subsequent ``resume_alignment_run``
+    picks up where this left off.
+    """
+    with session_scope() as session:
+        run = get_alignment_run_record(session, workspace_id, run_id)
+        if run.status not in {
+            AlignmentRunStatus.PENDING.value,
+            AlignmentRunStatus.RUNNING.value,
+        }:
+            return load_alignment_stage_summary(workspace_id)
+
+    mark_run_paused_pending(run_id)
+    terminate_run_subprocesses(run_id)
+    # The worker path will observe the paused-pending flag and mark PAUSED.
+    # If the worker is already dead (e.g., killed between steps), flip the
+    # status here so the UI sees paused immediately.
+    mark_alignment_run_paused(workspace_id, run_id)
+    return load_alignment_stage_summary(workspace_id)
+
+
+def resume_alignment_run(workspace_id: str, run_id: str) -> AlignmentStageSummaryResponse:
+    """Resume a paused run: validate state, flip to PENDING, re-enqueue worker."""
+    with session_scope() as session:
+        run = get_alignment_run_record(session, workspace_id, run_id)
+        if run.status != AlignmentRunStatus.PAUSED.value:
+            raise ValueError(
+                f"Cannot resume a run in status {run.status!r}; only paused runs are resumable."
+            )
+        # Ensure no *other* run on this workspace is already running/pending.
+        conflict = session.scalar(
+            get_alignment_run_query()
+            .where(
+                PipelineRunRecord.workspace_id == workspace_id,
+                PipelineRunRecord.stage_id == ALIGNMENT_STAGE_ID,
+                PipelineRunRecord.id != run_id,
+                PipelineRunRecord.status.in_(
+                    [
+                        AlignmentRunStatus.PENDING.value,
+                        AlignmentRunStatus.RUNNING.value,
+                    ]
+                ),
+            )
+            .limit(1)
+        )
+        if conflict is not None:
+            raise ValueError(
+                "Another alignment run is already active on this workspace."
+            )
+
+        # Validate resume-required state on disk.
+        run_dir = get_alignment_run_root(workspace_id, run_id)
+        manifest = alignment_manifest.load_manifest(run_dir)
+        if manifest is None:
+            raise ValueError(
+                "Resume state is missing on disk; the paused run cannot be resumed. Use Cancel & discard to start fresh."
+            )
+
+        timestamp = utc_now()
+        run.status = AlignmentRunStatus.PENDING.value
+        run.progress = 5
+        run.runtime_phase = AlignmentRuntimePhase.PREPARING_REFERENCE.value
+        run.blocking_reason = None
+        run.error = None
+        run.updated_at = timestamp
+        run.completed_at = None
+        run.workspace.updated_at = timestamp
+        session.add(run)
+        session.add(run.workspace)
+
+    enqueue_alignment_run(workspace_id, run_id)
+    return load_alignment_stage_summary(workspace_id)
+
+
 def run_alignment(
     workspace_id: str,
     run_id: str,
 ) -> None:
     try:
+        clear_run_cancelled(run_id)
         inputs = start_alignment_run(workspace_id, run_id)
         reference_path = ensure_reference_ready(inputs.reference)
         update_alignment_run_progress(
@@ -1982,47 +2847,82 @@ def run_alignment(
             runtime_phase=AlignmentRuntimePhase.ALIGNING,
         )
 
+        # Persistent run dir under {app_data}/workspaces/{id}/alignment/{run_id}/.
+        # Artifacts land here directly (no copy from tempdir). On pause we leave
+        # everything in place; on cancel/discard the whole tree is wiped.
+        run_dir = get_alignment_run_root(workspace_id, run_id)
+        alignment_manifest.initialize_manifest(
+            run_dir,
+            run_id=run_id,
+            chunk_reads=get_alignment_chunk_reads(),
+            lanes=[lane.value for lane in LANES],
+        )
+
         lane_outputs: list[LaneExecutionOutput] = []
-        alignment_tmp_root = get_app_data_root() / "tmp"
-        alignment_tmp_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(
-            prefix=f"alignment-{run_id}-",
-            dir=str(alignment_tmp_root),
-        ) as temp_dir_name:
-            temp_dir = Path(temp_dir_name)
-            for index, sample_lane in enumerate(LANES, start=1):
-                lane_input = inputs.lanes[sample_lane]
-                lane_dir = temp_dir / sample_lane.value
-                lane_dir.mkdir(parents=True, exist_ok=True)
-                lane_outputs.append(
-                    execute_alignment_lane(
-                        workspace_display_name=inputs.workspace_display_name,
-                        workspace_id=inputs.workspace_id,
-                        run_id=run_id,
-                        sample_lane=sample_lane,
-                        reference_path=reference_path,
-                        r1_path=lane_input.r1_path,
-                        r2_path=lane_input.r2_path,
-                        working_dir=lane_dir,
-                    )
+        for index, sample_lane in enumerate(LANES, start=1):
+            lane_input = inputs.lanes[sample_lane]
+            lane_dir = run_dir / sample_lane.value
+            lane_dir.mkdir(parents=True, exist_ok=True)
+            lane_outputs.append(
+                execute_alignment_lane(
+                    workspace_display_name=inputs.workspace_display_name,
+                    workspace_id=inputs.workspace_id,
+                    run_id=run_id,
+                    sample_lane=sample_lane,
+                    reference_path=reference_path,
+                    r1_path=lane_input.r1_path,
+                    r2_path=lane_input.r2_path,
+                    working_dir=lane_dir,
+                    run_dir=run_dir,
                 )
-                update_alignment_run_progress(
-                    workspace_id,
-                    run_id,
-                    35 if index == 1 else 75,
-                    runtime_phase=AlignmentRuntimePhase.ALIGNING,
-                )
+            )
             update_alignment_run_progress(
                 workspace_id,
                 run_id,
-                90,
-                runtime_phase=AlignmentRuntimePhase.FINALIZING,
+                35 if index == 1 else 75,
+                runtime_phase=AlignmentRuntimePhase.ALIGNING,
             )
-            persist_alignment_run_success(workspace_id, run_id, lane_outputs)
+        update_alignment_run_progress(
+            workspace_id,
+            run_id,
+            90,
+            runtime_phase=AlignmentRuntimePhase.FINALIZING,
+        )
+        persist_alignment_run_success(workspace_id, run_id, lane_outputs)
+        # On success: wipe per-lane chunks/ directories and the manifest. Final
+        # artifacts (BAM, BAI, flagstat, idxstats, stats) stay in place.
+        for sample_lane in LANES:
+            lane_chunks = run_dir / sample_lane.value / f"{sample_lane.value}.chunks"
+            if lane_chunks.exists():
+                shutil.rmtree(lane_chunks, ignore_errors=True)
+        manifest_file = run_dir / alignment_manifest.MANIFEST_FILENAME
+        if manifest_file.exists():
+            try:
+                manifest_file.unlink()
+            except OSError:
+                pass
+    except AlignmentCancelledError:
+        # AlignmentCancelledError is raised only from the cancel path today;
+        # a pause also sets the cancel flag but we detect that separately in
+        # cancel_alignment_run / pause_alignment_run to mark the right state.
+        if is_run_paused_pending(run_id):
+            mark_alignment_run_paused(workspace_id, run_id)
+        else:
+            mark_alignment_run_cancelled(workspace_id, run_id)
     except Exception as error:
-        mark_alignment_run_failed(workspace_id, run_id, str(error))
+        # If the run was cancelled or paused, subprocess kills will often
+        # surface as generic errors; prefer the explicit terminal states.
+        if is_run_paused_pending(run_id):
+            mark_alignment_run_paused(workspace_id, run_id)
+        elif is_run_cancelled(run_id):
+            mark_alignment_run_cancelled(workspace_id, run_id)
+        else:
+            mark_alignment_run_failed(workspace_id, run_id, str(error))
     finally:
         clear_chunk_progress(run_id)
+        clear_subprocess_registry(run_id)
+        clear_run_cancelled(run_id)
+        clear_run_paused_pending(run_id)
 
 
 def load_alignment_artifact_download(

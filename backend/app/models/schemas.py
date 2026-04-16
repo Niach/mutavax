@@ -91,6 +91,7 @@ class AlignmentStageStatus(str, Enum):
     BLOCKED = "blocked"
     READY = "ready"
     RUNNING = "running"
+    PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -100,6 +101,8 @@ class AlignmentRunStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+    PAUSED = "paused"
 
 
 class AlignmentRuntimePhase(str, Enum):
@@ -284,6 +287,11 @@ class AlignmentRunResponse(BaseModel):
     blocking_reason: Optional[str] = None
     error: Optional[str] = None
     command_log: List[str] = Field(default_factory=list)
+    recent_log_tail: List[str] = Field(default_factory=list)
+    last_activity_at: Optional[str] = None
+    eta_seconds: Optional[float] = None
+    progress_components: Dict[str, float] = Field(default_factory=dict)
+    expected_total_per_lane: Dict[SampleLane, int] = Field(default_factory=dict)
     lane_metrics: Dict[SampleLane, AlignmentLaneMetricsResponse] = Field(
         default_factory=dict
     )

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Notification, shell } = require("electron");
 const { statSync } = require("node:fs");
 const { join } = require("node:path");
 
@@ -63,6 +63,18 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle("desktop:get-app-data-path", async () => app.getPath("userData"));
+
+  ipcMain.handle("desktop:notify", async (_event, payload) => {
+    if (!payload || typeof payload !== "object") return;
+    const title = typeof payload.title === "string" ? payload.title : "cancerstudio";
+    const body = typeof payload.body === "string" ? payload.body : "";
+    if (!Notification.isSupported()) return;
+    try {
+      new Notification({ title, body, silent: false }).show();
+    } catch {
+      // Swallow — notifications are best-effort.
+    }
+  });
 
   createWindow();
 

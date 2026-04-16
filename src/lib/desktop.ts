@@ -5,10 +5,16 @@ export interface DesktopSelectedFile {
   modifiedAtMs: number;
 }
 
+export interface DesktopNotifyPayload {
+  title: string;
+  body: string;
+}
+
 export interface DesktopBridge {
   pickSequencingFiles: () => Promise<DesktopSelectedFile[]>;
   openPath: (targetPath: string) => Promise<void>;
   getAppDataPath: () => Promise<string>;
+  notify?: (payload: DesktopNotifyPayload) => Promise<void>;
 }
 
 declare global {

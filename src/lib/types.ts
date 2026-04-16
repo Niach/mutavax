@@ -43,9 +43,16 @@ export type AlignmentStageStatus =
   | "blocked"
   | "ready"
   | "running"
+  | "paused"
   | "completed"
   | "failed";
-export type AlignmentRunStatus = "pending" | "running" | "completed" | "failed";
+export type AlignmentRunStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "paused";
 export type AlignmentRuntimePhase =
   | "preparing_reference"
   | "aligning"
@@ -197,6 +204,13 @@ export interface ChunkProgressState {
   activeChunks: number;
 }
 
+export interface AlignmentProgressComponents {
+  referencePrep: number;
+  aligning: number;
+  finalizing: number;
+  stats: number;
+}
+
 export interface AlignmentRun {
   id: string;
   status: AlignmentRunStatus;
@@ -214,6 +228,11 @@ export interface AlignmentRun {
   blockingReason?: string | null;
   error?: string | null;
   commandLog: string[];
+  recentLogTail: string[];
+  lastActivityAt?: string | null;
+  etaSeconds?: number | null;
+  progressComponents: AlignmentProgressComponents;
+  expectedTotalPerLane: Partial<Record<SampleLane, number>>;
   laneMetrics: Partial<Record<SampleLane, AlignmentLaneMetrics>>;
   chunkProgress: Partial<Record<SampleLane, ChunkProgressState>>;
   artifacts: AlignmentArtifact[];

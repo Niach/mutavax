@@ -179,6 +179,13 @@ type AlignmentRunDto = {
   blocking_reason?: string | null;
   error?: string | null;
   command_log: string[];
+  recent_log_tail?: string[] | null;
+  last_activity_at?: string | null;
+  eta_seconds?: number | null;
+  progress_components?: Partial<
+    Record<"reference_prep" | "aligning" | "finalizing" | "stats", number>
+  > | null;
+  expected_total_per_lane?: Partial<Record<SampleLane, number>> | null;
   lane_metrics: Partial<Record<SampleLane, AlignmentLaneMetricsDto>>;
   chunk_progress?: Partial<Record<SampleLane, ChunkProgressStateDto>>;
   artifacts: AlignmentArtifactDto[];
@@ -440,6 +447,20 @@ function mapAlignmentRun(dto: AlignmentRunDto): AlignmentRun {
   if (dto.chunk_progress?.normal) {
     chunkProgress.normal = mapChunkProgressState(dto.chunk_progress.normal);
   }
+  const components = dto.progress_components ?? {};
+  const progressComponents = {
+    referencePrep: components.reference_prep ?? 0,
+    aligning: components.aligning ?? 0,
+    finalizing: components.finalizing ?? 0,
+    stats: components.stats ?? 0,
+  };
+  const expectedTotalPerLane: AlignmentRun["expectedTotalPerLane"] = {};
+  if (dto.expected_total_per_lane?.tumor != null) {
+    expectedTotalPerLane.tumor = dto.expected_total_per_lane.tumor;
+  }
+  if (dto.expected_total_per_lane?.normal != null) {
+    expectedTotalPerLane.normal = dto.expected_total_per_lane.normal;
+  }
   return {
     id: dto.id,
     status: dto.status,
@@ -457,6 +478,11 @@ function mapAlignmentRun(dto: AlignmentRunDto): AlignmentRun {
     blockingReason: dto.blocking_reason ?? null,
     error: dto.error ?? null,
     commandLog: dto.command_log,
+    recentLogTail: dto.recent_log_tail ?? [],
+    lastActivityAt: dto.last_activity_at ?? null,
+    etaSeconds: dto.eta_seconds ?? null,
+    progressComponents,
+    expectedTotalPerLane,
     laneMetrics,
     chunkProgress,
     artifacts: dto.artifacts.map(mapAlignmentArtifact),
@@ -800,6 +826,27 @@ export const api = {
     mapAlignmentStageSummary(
       await request<AlignmentStageSummaryDto>(
         `/api/workspaces/${workspaceId}/alignment/rerun`,
+        { method: "POST" }
+      )
+    ),
+  cancelAlignment: async (workspaceId: string, runId: string) =>
+    mapAlignmentStageSummary(
+      await request<AlignmentStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/alignment/runs/${runId}/cancel`,
+        { method: "POST" }
+      )
+    ),
+  pauseAlignment: async (workspaceId: string, runId: string) =>
+    mapAlignmentStageSummary(
+      await request<AlignmentStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/alignment/runs/${runId}/pause`,
+        { method: "POST" }
+      )
+    ),
+  resumeAlignment: async (workspaceId: string, runId: string) =>
+    mapAlignmentStageSummary(
+      await request<AlignmentStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/alignment/runs/${runId}/resume`,
         { method: "POST" }
       )
     ),

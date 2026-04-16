@@ -128,6 +128,7 @@ def test_run_chunked_strobealign_pipeline_merges_multiple_chunks(
         aligner_threads: int,
         sort_threads: int,
         sort_memory: str,
+        run_id=None,
     ) -> list[str]:
         header_bytes = (
             b"@HD\tVN:1.6\tSO:coordinate\n"
@@ -229,6 +230,7 @@ def test_run_chunked_strobealign_pipeline_overlaps_split_and_align(
         aligner_threads: int,
         sort_threads: int,
         sort_memory: str,
+        run_id=None,
     ) -> list[str]:
         idx = int(r1_path.stem.split("_")[1].split(".")[0])
         with align_events_lock:
@@ -325,3 +327,281 @@ def test_chunk_progress_snapshot_round_trip() -> None:
     finally:
         clear_chunk_progress(run_id)
         assert get_chunk_progress_snapshot(run_id) == {}
+
+
+def test_compute_progress_components_weighting_stays_blended() -> None:
+    from app.models.schemas import (
+        AlignmentRunStatus,
+        AlignmentRuntimePhase,
+        ChunkProgressPhase,
+        ChunkProgressStateResponse,
+    )
+
+    # Halfway through aligning a 100-chunk run (reference prep done, no
+    # finalizing yet).
+    chunk_progress = {
+        SampleLane.TUMOR: ChunkProgressStateResponse(
+            phase=ChunkProgressPhase.ALIGNING,
+            total_chunks=50,
+            completed_chunks=25,
+            active_chunks=2,
+        ),
+        SampleLane.NORMAL: ChunkProgressStateResponse(
+            phase=ChunkProgressPhase.ALIGNING,
+            total_chunks=50,
+            completed_chunks=25,
+            active_chunks=2,
+        ),
+    }
+    components = alignment_service.compute_progress_components(
+        status=AlignmentRunStatus.RUNNING,
+        runtime_phase=AlignmentRuntimePhase.ALIGNING,
+        chunk_progress=chunk_progress,
+        expected_total_per_lane={},
+    )
+    assert components["reference_prep"] == 1.0
+    assert components["aligning"] == pytest.approx(0.5, abs=1e-6)
+    assert components["finalizing"] == 0.0
+    assert components["stats"] == 0.0
+
+    blended = alignment_service.compute_blended_progress(components)
+    # 0.05 + 0.75*0.5 + 0 + 0 = 0.425
+    assert blended == pytest.approx(0.425, abs=1e-6)
+
+
+def test_compute_progress_components_finalizing_partial_value() -> None:
+    from app.models.schemas import (
+        AlignmentRunStatus,
+        AlignmentRuntimePhase,
+        ChunkProgressPhase,
+        ChunkProgressStateResponse,
+    )
+
+    chunk_progress = {
+        SampleLane.TUMOR: ChunkProgressStateResponse(
+            phase=ChunkProgressPhase.MERGING,
+            total_chunks=10,
+            completed_chunks=10,
+            active_chunks=0,
+        ),
+        SampleLane.NORMAL: ChunkProgressStateResponse(
+            phase=ChunkProgressPhase.MERGING,
+            total_chunks=10,
+            completed_chunks=10,
+            active_chunks=0,
+        ),
+    }
+    components = alignment_service.compute_progress_components(
+        status=AlignmentRunStatus.RUNNING,
+        runtime_phase=AlignmentRuntimePhase.FINALIZING,
+        chunk_progress=chunk_progress,
+        expected_total_per_lane={},
+    )
+    # Finalizing at 0.5 keeps the overall bar moving (0.05 + 0.75 + 0.15*0.5 + 0
+    # = 0.875) instead of stalling at 0.80.
+    blended = alignment_service.compute_blended_progress(components)
+    assert blended == pytest.approx(0.875, abs=1e-6)
+
+
+def test_compute_eta_seconds_requires_warmup() -> None:
+    import time as _time
+
+    from app.models.schemas import (
+        ChunkProgressPhase,
+        ChunkProgressStateResponse,
+    )
+
+    # < 60s since started → no ETA yet
+    chunk_progress = {
+        SampleLane.TUMOR: ChunkProgressStateResponse(
+            phase=ChunkProgressPhase.ALIGNING,
+            total_chunks=100,
+            completed_chunks=1,
+            active_chunks=1,
+        ),
+    }
+    raw = {
+        "tumor": ChunkProgressState(
+            phase="aligning",
+            total_chunks=100,
+            completed_chunks=1,
+            active_chunks=1,
+            completion_times=[_time.time()],
+        ),
+    }
+    eta = alignment_service.compute_eta_seconds(
+        chunk_progress,
+        raw,
+        {},
+        started_at_epoch=_time.time() - 10,  # only 10s ago
+    )
+    assert eta is None
+
+
+def test_compute_eta_seconds_projects_rate() -> None:
+    import time as _time
+
+    from app.models.schemas import (
+        ChunkProgressPhase,
+        ChunkProgressStateResponse,
+    )
+
+    now = _time.time()
+    # 5 chunks completed in the last 10 minutes, 95 remaining.
+    completion_times = [now - t for t in (500, 400, 300, 200, 100)]
+    chunk_progress = {
+        SampleLane.TUMOR: ChunkProgressStateResponse(
+            phase=ChunkProgressPhase.ALIGNING,
+            total_chunks=100,
+            completed_chunks=5,
+            active_chunks=1,
+        ),
+    }
+    raw = {
+        "tumor": ChunkProgressState(
+            phase="aligning",
+            total_chunks=100,
+            completed_chunks=5,
+            active_chunks=1,
+            completion_times=completion_times,
+        ),
+    }
+    eta = alignment_service.compute_eta_seconds(
+        chunk_progress,
+        raw,
+        {},
+        started_at_epoch=now - 600,
+    )
+    # rate = 5 per 600s, remaining 95 → ~11400s ≈ 3h10m
+    assert eta is not None
+    assert 10_000 < eta < 14_000
+
+
+def test_cancel_alignment_marks_run_cancelled(tmp_path: Path, monkeypatch) -> None:
+    """cancel_alignment_run transitions a running run to CANCELLED state."""
+    from app.db import init_db, session_scope
+    from app.models.records import (
+        IngestionBatchRecord,
+        PipelineArtifactRecord,
+        PipelineRunRecord,
+        WorkspaceFileRecord,
+        WorkspaceRecord,
+    )
+    from app.models.schemas import AlignmentRunStatus
+    from sqlalchemy import delete
+
+    init_db()
+    with session_scope() as session:
+        session.execute(delete(PipelineArtifactRecord))
+        session.execute(delete(PipelineRunRecord))
+        session.execute(delete(WorkspaceFileRecord))
+        session.execute(delete(IngestionBatchRecord))
+        session.execute(delete(WorkspaceRecord))
+
+    try:
+        from datetime import datetime, timezone
+        import uuid as _uuid
+
+        workspace_id = str(_uuid.uuid4())
+        run_id = str(_uuid.uuid4())
+        now = datetime.now(timezone.utc)
+
+        with session_scope() as session:
+            workspace = WorkspaceRecord(
+                id=workspace_id,
+                display_name="Cancel test",
+                species="human",
+                active_stage="alignment",
+                created_at=now,
+                updated_at=now,
+            )
+            run = PipelineRunRecord(
+                id=run_id,
+                workspace_id=workspace_id,
+                stage_id="alignment",
+                status=AlignmentRunStatus.RUNNING.value,
+                progress=20,
+                created_at=now,
+                updated_at=now,
+                started_at=now,
+            )
+            session.add(workspace)
+            session.add(run)
+
+        summary = alignment_service.cancel_alignment_run(workspace_id, run_id)
+        assert summary.latest_run is not None
+        assert summary.latest_run.status == AlignmentRunStatus.CANCELLED
+        assert summary.latest_run.blocking_reason == "Stopped by user."
+    finally:
+        with session_scope() as session:
+            session.execute(delete(PipelineArtifactRecord))
+            session.execute(delete(PipelineRunRecord))
+            session.execute(delete(WorkspaceFileRecord))
+            session.execute(delete(IngestionBatchRecord))
+            session.execute(delete(WorkspaceRecord))
+
+
+def test_cancel_alignment_is_idempotent_after_completion() -> None:
+    """Cancelling an already-terminal run returns current summary without error."""
+    from app.db import init_db, session_scope
+    from app.models.records import (
+        IngestionBatchRecord,
+        PipelineArtifactRecord,
+        PipelineRunRecord,
+        WorkspaceFileRecord,
+        WorkspaceRecord,
+    )
+    from app.models.schemas import AlignmentRunStatus
+    from sqlalchemy import delete
+
+    init_db()
+    with session_scope() as session:
+        session.execute(delete(PipelineArtifactRecord))
+        session.execute(delete(PipelineRunRecord))
+        session.execute(delete(WorkspaceFileRecord))
+        session.execute(delete(IngestionBatchRecord))
+        session.execute(delete(WorkspaceRecord))
+
+    try:
+        from datetime import datetime, timezone
+        import uuid as _uuid
+
+        workspace_id = str(_uuid.uuid4())
+        run_id = str(_uuid.uuid4())
+        now = datetime.now(timezone.utc)
+
+        with session_scope() as session:
+            workspace = WorkspaceRecord(
+                id=workspace_id,
+                display_name="Idempotent cancel",
+                species="human",
+                active_stage="alignment",
+                created_at=now,
+                updated_at=now,
+            )
+            run = PipelineRunRecord(
+                id=run_id,
+                workspace_id=workspace_id,
+                stage_id="alignment",
+                status=AlignmentRunStatus.FAILED.value,
+                progress=100,
+                created_at=now,
+                updated_at=now,
+                started_at=now,
+                completed_at=now,
+                error="some earlier error",
+            )
+            session.add(workspace)
+            session.add(run)
+
+        # Should not raise and should preserve the FAILED status.
+        summary = alignment_service.cancel_alignment_run(workspace_id, run_id)
+        assert summary.latest_run is not None
+        assert summary.latest_run.status == AlignmentRunStatus.FAILED
+    finally:
+        with session_scope() as session:
+            session.execute(delete(PipelineArtifactRecord))
+            session.execute(delete(PipelineRunRecord))
+            session.execute(delete(WorkspaceFileRecord))
+            session.execute(delete(IngestionBatchRecord))
+            session.execute(delete(WorkspaceRecord))
