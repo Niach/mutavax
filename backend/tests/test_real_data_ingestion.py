@@ -19,6 +19,7 @@ READY_TIMEOUT_SECONDS = 90
 ALIGNMENT_TIMEOUT_SECONDS = int(
     os.getenv("REAL_DATA_ALIGNMENT_TIMEOUT_SECONDS", "3600")
 )
+ASSAY_TYPE = os.getenv("REAL_DATA_ASSAY_TYPE", "wes").lower()
 
 pytestmark = [pytest.mark.integration, pytest.mark.real_data]
 
@@ -327,7 +328,7 @@ def test_real_data_alignment_smoke_completes_with_expected_artifacts() -> None:
 
         profile_response = client.patch(
             f"/api/workspaces/{workspace['id']}/analysis-profile",
-            json={"assay_type": "wes", "reference_preset": "grch38"},
+            json={"assay_type": ASSAY_TYPE, "reference_preset": "grch38"},
         )
         assert profile_response.status_code == 200, profile_response.text
 
@@ -358,7 +359,7 @@ def test_real_data_alignment_smoke_completes_with_expected_artifacts() -> None:
 
         assert summary["status"] == "completed"
         assert summary["ready_for_variant_calling"] is True
-        assert summary["analysis_profile"]["assay_type"] == "wes"
+        assert summary["analysis_profile"]["assay_type"] == ASSAY_TYPE
         assert {
             (artifact["sample_lane"], artifact["artifact_kind"])
             for artifact in summary["artifacts"]

@@ -2,10 +2,14 @@ import type {
   AlignmentArtifact,
   AlignmentLaneMetrics,
   AlignmentRuntimePhase,
+  AlignmentSettings,
+  AlignmentSettingsPatch,
   AlignmentStageSummary,
   AlignmentRun,
   AnalysisProfile,
   AssayType,
+  ChunkProgressPhase,
+  ChunkProgressState,
   CreateWorkspaceInput,
   FastqReadPreview,
   IngestionLaneSummary,
@@ -17,6 +21,7 @@ import type {
   ReadPair,
   SampledReadStats,
   SystemMemoryResponse,
+  SystemResourcesResponse,
   Workspace,
   WorkspaceFile,
   ReferencePreset,
@@ -143,6 +148,13 @@ type AlignmentArtifactDto = {
   local_path?: string | null;
 };
 
+type ChunkProgressStateDto = {
+  phase: ChunkProgressPhase;
+  total_chunks: number;
+  completed_chunks: number;
+  active_chunks: number;
+};
+
 type AlignmentRunDto = {
   id: string;
   status: AlignmentRun["status"];
@@ -161,6 +173,7 @@ type AlignmentRunDto = {
   error?: string | null;
   command_log: string[];
   lane_metrics: Partial<Record<SampleLane, AlignmentLaneMetricsDto>>;
+  chunk_progress?: Partial<Record<SampleLane, ChunkProgressStateDto>>;
   artifacts: AlignmentArtifactDto[];
 };
 
@@ -180,6 +193,32 @@ type SystemMemoryDto = {
   available_bytes: number | null;
   total_bytes: number | null;
   threshold_bytes: number;
+};
+
+type SystemResourcesDto = {
+  cpu_count: number;
+  total_memory_bytes: number | null;
+  available_memory_bytes: number | null;
+  app_data_disk_total_bytes: number | null;
+  app_data_disk_free_bytes: number | null;
+  app_data_root: string;
+};
+
+type AlignmentSettingsDto = {
+  aligner_threads: number;
+  samtools_threads: number;
+  samtools_sort_threads: number;
+  samtools_sort_memory: string;
+  chunk_reads: number;
+  chunk_parallelism: number;
+  defaults: {
+    aligner_threads: number;
+    samtools_threads: number;
+    samtools_sort_threads: number;
+    samtools_sort_memory: string;
+    chunk_reads: number;
+    chunk_parallelism: number;
+  };
 };
 
 function mapWorkspaceFile(dto: WorkspaceFileDto): WorkspaceFile {
@@ -329,6 +368,15 @@ function mapAlignmentArtifact(dto: AlignmentArtifactDto): AlignmentArtifact {
   };
 }
 
+function mapChunkProgressState(dto: ChunkProgressStateDto): ChunkProgressState {
+  return {
+    phase: dto.phase,
+    totalChunks: dto.total_chunks,
+    completedChunks: dto.completed_chunks,
+    activeChunks: dto.active_chunks,
+  };
+}
+
 function mapAlignmentRun(dto: AlignmentRunDto): AlignmentRun {
   const laneMetrics: AlignmentRun["laneMetrics"] = {};
   if (dto.lane_metrics.tumor) {
@@ -336,6 +384,13 @@ function mapAlignmentRun(dto: AlignmentRunDto): AlignmentRun {
   }
   if (dto.lane_metrics.normal) {
     laneMetrics.normal = mapAlignmentLaneMetrics(dto.lane_metrics.normal);
+  }
+  const chunkProgress: AlignmentRun["chunkProgress"] = {};
+  if (dto.chunk_progress?.tumor) {
+    chunkProgress.tumor = mapChunkProgressState(dto.chunk_progress.tumor);
+  }
+  if (dto.chunk_progress?.normal) {
+    chunkProgress.normal = mapChunkProgressState(dto.chunk_progress.normal);
   }
   return {
     id: dto.id,
@@ -355,7 +410,27 @@ function mapAlignmentRun(dto: AlignmentRunDto): AlignmentRun {
     error: dto.error ?? null,
     commandLog: dto.command_log,
     laneMetrics,
+    chunkProgress,
     artifacts: dto.artifacts.map(mapAlignmentArtifact),
+  };
+}
+
+function mapAlignmentSettings(dto: AlignmentSettingsDto): AlignmentSettings {
+  return {
+    alignerThreads: dto.aligner_threads,
+    samtoolsThreads: dto.samtools_threads,
+    samtoolsSortThreads: dto.samtools_sort_threads,
+    samtoolsSortMemory: dto.samtools_sort_memory,
+    chunkReads: dto.chunk_reads,
+    chunkParallelism: dto.chunk_parallelism,
+    defaults: {
+      alignerThreads: dto.defaults.aligner_threads,
+      samtoolsThreads: dto.defaults.samtools_threads,
+      samtoolsSortThreads: dto.defaults.samtools_sort_threads,
+      samtoolsSortMemory: dto.defaults.samtools_sort_memory,
+      chunkReads: dto.defaults.chunk_reads,
+      chunkParallelism: dto.defaults.chunk_parallelism,
+    },
   };
 }
 
@@ -636,6 +711,41 @@ export const api = {
       totalBytes: dto.total_bytes,
       thresholdBytes: dto.threshold_bytes,
     };
+  },
+  getSystemResources: async (): Promise<SystemResourcesResponse> => {
+    const dto = await request<SystemResourcesDto>("/api/system/resources");
+    return {
+      cpuCount: dto.cpu_count,
+      totalMemoryBytes: dto.total_memory_bytes,
+      availableMemoryBytes: dto.available_memory_bytes,
+      appDataDiskTotalBytes: dto.app_data_disk_total_bytes,
+      appDataDiskFreeBytes: dto.app_data_disk_free_bytes,
+      appDataRoot: dto.app_data_root,
+    };
+  },
+  getAlignmentSettings: async (): Promise<AlignmentSettings> => {
+    const dto = await request<AlignmentSettingsDto>("/api/settings/alignment");
+    return mapAlignmentSettings(dto);
+  },
+  updateAlignmentSettings: async (
+    patch: AlignmentSettingsPatch
+  ): Promise<AlignmentSettings> => {
+    const body: Record<string, unknown> = {};
+    if (patch.reset) body.reset = true;
+    if (patch.alignerThreads !== undefined) body.aligner_threads = patch.alignerThreads;
+    if (patch.samtoolsThreads !== undefined) body.samtools_threads = patch.samtoolsThreads;
+    if (patch.samtoolsSortThreads !== undefined)
+      body.samtools_sort_threads = patch.samtoolsSortThreads;
+    if (patch.samtoolsSortMemory !== undefined)
+      body.samtools_sort_memory = patch.samtoolsSortMemory;
+    if (patch.chunkReads !== undefined) body.chunk_reads = patch.chunkReads;
+    if (patch.chunkParallelism !== undefined)
+      body.chunk_parallelism = patch.chunkParallelism;
+    const dto = await request<AlignmentSettingsDto>("/api/settings/alignment", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+    return mapAlignmentSettings(dto);
   },
   resolveDownloadUrl: (downloadPath: string) => `${PUBLIC_API_BASE}${downloadPath}`,
 };

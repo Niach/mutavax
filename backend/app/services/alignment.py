@@ -1,22 +1,26 @@
+import concurrent.futures
 import gzip
 import json
 import os
+import queue
 import re
 import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.request import urlopen
-from typing import Optional
+from typing import Any, Callable, Literal, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.db import session_scope
-from app.runtime import get_reference_bundle_root
+from app.runtime import get_app_data_root, get_reference_bundle_root, load_runtime_setting
 from app.models.records import (
     PipelineArtifactRecord,
     PipelineRunRecord,
@@ -32,6 +36,8 @@ from app.models.schemas import (
     AlignmentStageStatus,
     AlignmentStageSummaryResponse,
     AnalysisAssayType,
+    ChunkProgressPhase,
+    ChunkProgressStateResponse,
     PipelineStageId,
     QcVerdict,
     ReadPair,
@@ -395,6 +401,19 @@ def serialize_alignment_run(
     record: PipelineRunRecord,
 ) -> AlignmentRunResponse:
     lane_metrics = parse_alignment_result_payload(record.result_payload)
+    chunk_progress_snapshot = get_chunk_progress_snapshot(record.id)
+    chunk_progress: dict[SampleLane, ChunkProgressStateResponse] = {}
+    for lane_value, state in chunk_progress_snapshot.items():
+        try:
+            lane_enum = SampleLane(lane_value)
+        except ValueError:
+            continue
+        chunk_progress[lane_enum] = ChunkProgressStateResponse(
+            phase=ChunkProgressPhase(state.phase),
+            total_chunks=state.total_chunks,
+            completed_chunks=state.completed_chunks,
+            active_chunks=state.active_chunks,
+        )
     return AlignmentRunResponse(
         id=record.id,
         status=AlignmentRunStatus(record.status),
@@ -421,6 +440,7 @@ def serialize_alignment_run(
         error=record.error,
         command_log=record.command_log.splitlines() if record.command_log else [],
         lane_metrics=lane_metrics,
+        chunk_progress=chunk_progress,
         artifacts=[serialize_alignment_artifact(artifact) for artifact in record.artifacts],
     )
 
@@ -858,7 +878,240 @@ def run_command(command: list[str]) -> str:
     return stderr
 
 
-def run_strobealign_name_sort_pipeline(
+def _setting_int(key: str, env_var: str, default: int) -> int:
+    value = load_runtime_setting(key)
+    if value is not None:
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            pass
+    env = os.getenv(env_var)
+    if env:
+        try:
+            return max(1, int(env))
+        except ValueError:
+            pass
+    return max(1, default)
+
+
+def _setting_str(key: str, env_var: str, default: str) -> str:
+    value = load_runtime_setting(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    env = os.getenv(env_var)
+    if env:
+        return env
+    return default
+
+
+def get_aligner_thread_count() -> int:
+    cpu_count = os.cpu_count() or 4
+    return _setting_int("aligner_threads", "ALIGNMENT_STROBEALIGN_THREADS", max(1, cpu_count - 4))
+
+
+def get_samtools_thread_count() -> int:
+    cpu_count = os.cpu_count() or 4
+    return _setting_int("samtools_threads", "ALIGNMENT_SAMTOOLS_THREADS", max(1, cpu_count // 4))
+
+
+def get_samtools_sort_thread_count() -> int:
+    return _setting_int("samtools_sort_threads", "ALIGNMENT_SAMTOOLS_SORT_THREADS", 3)
+
+
+def get_samtools_sort_memory() -> str:
+    return _setting_str("samtools_sort_memory", "ALIGNMENT_SAMTOOLS_SORT_MEMORY", "2G")
+
+
+def get_alignment_chunk_reads() -> int:
+    value = load_runtime_setting("chunk_reads")
+    if value is not None:
+        try:
+            return max(1_000_000, int(value))
+        except (TypeError, ValueError):
+            pass
+    env = os.getenv("ALIGNMENT_CHUNK_READS")
+    if env:
+        try:
+            return max(1_000_000, int(env))
+        except ValueError:
+            pass
+    return 20_000_000
+
+
+def get_alignment_chunk_parallelism() -> int:
+    value = load_runtime_setting("chunk_parallelism")
+    if value is not None:
+        try:
+            return max(1, min(8, int(value)))
+        except (TypeError, ValueError):
+            pass
+    env = os.getenv("ALIGNMENT_CHUNK_PARALLELISM")
+    if env:
+        try:
+            return max(1, min(8, int(env)))
+        except ValueError:
+            pass
+    return 2
+
+
+ChunkPhase = Literal["splitting", "aligning", "merging"]
+
+
+@dataclass
+class ChunkProgressState:
+    phase: ChunkPhase = "splitting"
+    total_chunks: int = 0
+    completed_chunks: int = 0
+    active_chunks: int = 0
+
+
+_chunk_progress_lock = threading.Lock()
+_chunk_progress_store: dict[str, dict[str, ChunkProgressState]] = {}
+
+
+def record_chunk_progress(
+    run_id: str,
+    sample_lane: SampleLane,
+    *,
+    phase: ChunkPhase,
+    total: int,
+    completed: int,
+    active: int,
+) -> None:
+    with _chunk_progress_lock:
+        lane_states = _chunk_progress_store.setdefault(run_id, {})
+        lane_states[sample_lane.value] = ChunkProgressState(
+            phase=phase,
+            total_chunks=total,
+            completed_chunks=completed,
+            active_chunks=active,
+        )
+
+
+def get_chunk_progress_snapshot(run_id: str) -> dict[str, ChunkProgressState]:
+    with _chunk_progress_lock:
+        lane_states = _chunk_progress_store.get(run_id)
+        if not lane_states:
+            return {}
+        return {lane: ChunkProgressState(**state.__dict__) for lane, state in lane_states.items()}
+
+
+def clear_chunk_progress(run_id: str) -> None:
+    with _chunk_progress_lock:
+        _chunk_progress_store.pop(run_id, None)
+
+
+def _spawn_split_subprocess(
+    *,
+    r1_path: Path,
+    r2_path: Path,
+    chunk_dir: Path,
+    reads_per_chunk: int,
+) -> tuple[list[subprocess.Popen], list[str]]:
+    """Launch pigz|split chains for R1 and R2 in the background, non-blocking.
+
+    Returns the live Popen objects (caller must wait on them) plus the quoted
+    command strings for the audit log.
+    """
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    lines_per_chunk = reads_per_chunk * 4
+
+    def _launch(src: Path, prefix: str) -> tuple[list[subprocess.Popen], list[list[str]]]:
+        pigz_cmd = ["pigz", "-dc", str(src)]
+        split_cmd = [
+            "split",
+            "-l",
+            str(lines_per_chunk),
+            "-d",
+            "-a",
+            "4",
+            "--additional-suffix=.fastq.gz",
+            "--filter=pigz -c -1 > $FILE",
+            "-",
+            str(chunk_dir / prefix),
+        ]
+        pigz_proc = subprocess.Popen(
+            pigz_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        split_proc = subprocess.Popen(
+            split_cmd,
+            stdin=pigz_proc.stdout,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+        )
+        assert pigz_proc.stdout is not None
+        pigz_proc.stdout.close()
+        return [pigz_proc, split_proc], [pigz_cmd, split_cmd]
+
+    procs: list[subprocess.Popen] = []
+    commands: list[list[str]] = []
+
+    try:
+        r1_procs, r1_cmds = _launch(r1_path, "r1_")
+        procs.extend(r1_procs)
+        commands.extend(r1_cmds)
+        r2_procs, r2_cmds = _launch(r2_path, "r2_")
+        procs.extend(r2_procs)
+        commands.extend(r2_cmds)
+    except BaseException:
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        raise
+
+    return procs, [quote_command(cmd) for cmd in commands]
+
+
+def split_paired_fastq_into_chunks(
+    *,
+    r1_path: Path,
+    r2_path: Path,
+    chunk_dir: Path,
+    reads_per_chunk: int,
+) -> tuple[list[tuple[Path, Path]], list[str]]:
+    """Split paired gzipped FASTQ into chunks of reads_per_chunk pairs each.
+
+    Thin blocking wrapper around `_spawn_split_subprocess` that waits for the
+    split to finish and returns the resulting chunk path pairs. Preserved for
+    unit tests and as a simpler API where overlap isn't needed.
+    """
+    procs, commands = _spawn_split_subprocess(
+        r1_path=r1_path,
+        r2_path=r2_path,
+        chunk_dir=chunk_dir,
+        reads_per_chunk=reads_per_chunk,
+    )
+
+    try:
+        for proc in procs:
+            rc = proc.wait()
+            if rc != 0:
+                raise RuntimeError(
+                    f"FASTQ split failed (rc={rc}): command={proc.args!r}"
+                )
+    except BaseException:
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        raise
+
+    r1_chunks = sorted(chunk_dir.glob("r1_*.fastq.gz"))
+    r2_chunks = sorted(chunk_dir.glob("r2_*.fastq.gz"))
+    if len(r1_chunks) != len(r2_chunks):
+        raise RuntimeError(
+            f"FASTQ split produced mismatched chunk counts "
+            f"({len(r1_chunks)} R1 vs {len(r2_chunks)} R2)"
+        )
+    if not r1_chunks:
+        raise RuntimeError("FASTQ split produced no chunks (empty input?)")
+    return list(zip(r1_chunks, r2_chunks)), commands
+
+
+def _align_single_chunk(
     *,
     reference_path: Path,
     read_group_flags: list[str],
@@ -867,55 +1120,458 @@ def run_strobealign_name_sort_pipeline(
     output_path: Path,
     aligner_binary: str,
     samtools_binary: str,
+    aligner_threads: int,
+    sort_threads: int,
+    sort_memory: str,
 ) -> list[str]:
+    aligner_stderr_path = output_path.with_suffix(output_path.suffix + ".strobealign.stderr.log")
+    fixmate_stderr_path = output_path.with_suffix(output_path.suffix + ".fixmate.stderr.log")
+    sort_stderr_path = output_path.with_suffix(output_path.suffix + ".samtools-sort.stderr.log")
+    sort_tmp_prefix = output_path.with_suffix(output_path.suffix + ".sort-tmp")
+
     aligner_command = [
         aligner_binary,
+        "-t",
+        str(aligner_threads),
         *read_group_flags,
         str(reference_path),
         str(r1_path),
         str(r2_path),
     ]
+    fixmate_command = [
+        samtools_binary,
+        "fixmate",
+        "-m",
+        "-u",
+        "-@",
+        "2",
+        "-",
+        "-",
+    ]
     sort_command = [
         samtools_binary,
         "sort",
-        "-n",
+        "-@",
+        str(sort_threads),
+        "-m",
+        sort_memory,
+        "-T",
+        str(sort_tmp_prefix),
         "-o",
         str(output_path),
-        "-",
     ]
 
-    aligner_process = subprocess.Popen(
-        aligner_command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    procs: list[subprocess.Popen] = []
     try:
-        sort_result = subprocess.run(
-            sort_command,
-            stdin=aligner_process.stdout,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with aligner_stderr_path.open("wb") as aligner_stderr_handle, \
+             fixmate_stderr_path.open("wb") as fixmate_stderr_handle, \
+             sort_stderr_path.open("wb") as sort_stderr_handle:
+            aligner_proc = subprocess.Popen(
+                aligner_command,
+                stdout=subprocess.PIPE,
+                stderr=aligner_stderr_handle,
+            )
+            procs.append(aligner_proc)
+
+            fixmate_proc = subprocess.Popen(
+                fixmate_command,
+                stdin=aligner_proc.stdout,
+                stdout=subprocess.PIPE,
+                stderr=fixmate_stderr_handle,
+            )
+            procs.append(fixmate_proc)
+            assert aligner_proc.stdout is not None
+            aligner_proc.stdout.close()
+
+            sort_proc = subprocess.Popen(
+                sort_command,
+                stdin=fixmate_proc.stdout,
+                stdout=subprocess.DEVNULL,
+                stderr=sort_stderr_handle,
+            )
+            procs.append(sort_proc)
+            assert fixmate_proc.stdout is not None
+            fixmate_proc.stdout.close()
+
+            sort_returncode = sort_proc.wait()
+            fixmate_returncode = fixmate_proc.wait()
+            aligner_returncode = aligner_proc.wait()
+    except BaseException:
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        raise
     finally:
-        if aligner_process.stdout is not None:
-            aligner_process.stdout.close()
+        for leftover in sort_tmp_prefix.parent.glob(f"{sort_tmp_prefix.name}.*.bam"):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
 
-    aligner_stderr = b""
-    if aligner_process.stderr is not None:
-        aligner_stderr = aligner_process.stderr.read()
-        aligner_process.stderr.close()
-    aligner_returncode = aligner_process.wait()
     if aligner_returncode != 0:
+        aligner_text = aligner_stderr_path.read_text(errors="replace").strip()
         raise RuntimeError(
-            f"strobealign failed: {aligner_stderr.decode(errors='replace').strip()}"
+            f"strobealign failed (rc={aligner_returncode}): {aligner_text or '<empty>'}"
         )
-    if sort_result.returncode != 0:
+    if fixmate_returncode != 0:
+        fixmate_text = fixmate_stderr_path.read_text(errors="replace").strip()
         raise RuntimeError(
-            f"samtools sort failed: {sort_result.stderr.strip()}"
+            f"samtools fixmate failed (rc={fixmate_returncode}): {fixmate_text or '<empty>'}"
+        )
+    if sort_returncode != 0:
+        sort_text = sort_stderr_path.read_text(errors="replace").strip()
+        raise RuntimeError(
+            f"samtools sort failed (rc={sort_returncode}): {sort_text or '<empty>'}"
         )
 
-    return [quote_command(aligner_command), quote_command(sort_command)]
+    return [
+        quote_command(aligner_command),
+        quote_command(fixmate_command),
+        quote_command(sort_command),
+    ]
+
+
+_CHUNK_WATCHER_POLL_SECONDS = 2.0
+_CHUNK_RE = re.compile(r"^r1_(\d{4})\.fastq\.gz$")
+
+
+def _chunk_ready_watcher(
+    *,
+    chunk_dir: Path,
+    split_procs: list[subprocess.Popen],
+    chunk_queue: "queue.Queue[Optional[tuple[int, Path, Path]]]",
+    parallelism: int,
+    on_split_complete: Callable[[int], None],
+    on_chunk_discovered: Callable[[int], None],
+    stop_event: threading.Event,
+) -> None:
+    """Poll chunk_dir for newly finished (r1_i, r2_i) pairs and enqueue them.
+
+    A chunk is considered complete when both r1_i.fastq.gz and r2_i.fastq.gz
+    exist and have been size-stable for one poll cycle. When all split procs
+    exit, does one final sweep and pushes `parallelism` sentinel None values.
+    """
+    seen_complete: set[int] = set()
+    candidate_sizes: dict[int, tuple[int, int]] = {}
+    split_done = False
+
+    while True:
+        if stop_event.is_set():
+            break
+
+        r1_entries: dict[int, Path] = {}
+        r2_entries: dict[int, Path] = {}
+        try:
+            for path in chunk_dir.iterdir():
+                match = _CHUNK_RE.match(path.name)
+                if match:
+                    r1_entries[int(match.group(1))] = path
+                    continue
+                match = re.match(r"^r2_(\d{4})\.fastq\.gz$", path.name)
+                if match:
+                    r2_entries[int(match.group(1))] = path
+        except FileNotFoundError:
+            pass
+
+        split_exit_rcs = [proc.poll() for proc in split_procs]
+        all_split_exited = all(rc is not None for rc in split_exit_rcs)
+
+        for idx in sorted(r1_entries):
+            if idx in seen_complete:
+                continue
+            r1_chunk = r1_entries[idx]
+            r2_chunk = r2_entries.get(idx)
+            if r2_chunk is None:
+                continue
+            try:
+                r1_size = r1_chunk.stat().st_size
+                r2_size = r2_chunk.stat().st_size
+            except FileNotFoundError:
+                continue
+
+            prev = candidate_sizes.get(idx)
+            is_last_candidate = all_split_exited and idx == max(r1_entries)
+            # A chunk is ready if: stable across two polls, OR split has exited
+            # and a later chunk (idx+1) exists (so we know this one is flushed),
+            # OR it's the last chunk and split has exited and size is stable.
+            next_exists = (idx + 1) in r1_entries and (idx + 1) in r2_entries
+            if prev == (r1_size, r2_size) and (next_exists or all_split_exited):
+                seen_complete.add(idx)
+                on_chunk_discovered(idx)
+                chunk_queue.put((idx, r1_chunk, r2_chunk))
+            elif next_exists and prev is None:
+                # Fast path: if a later chunk already exists, this chunk's
+                # writer has moved on. We still need one poll to confirm
+                # nothing is actively appending.
+                candidate_sizes[idx] = (r1_size, r2_size)
+            else:
+                candidate_sizes[idx] = (r1_size, r2_size)
+
+        if all_split_exited and not split_done:
+            split_done = True
+            # Check split return codes
+            for rc, proc in zip(split_exit_rcs, split_procs):
+                if rc != 0:
+                    raise RuntimeError(
+                        f"FASTQ split failed (rc={rc}): command={proc.args!r}"
+                    )
+            on_split_complete(len(r1_entries))
+
+            # One final sweep — catch any chunk we haven't enqueued yet
+            for idx in sorted(r1_entries):
+                if idx in seen_complete:
+                    continue
+                r1_chunk = r1_entries[idx]
+                r2_chunk = r2_entries.get(idx)
+                if r2_chunk is None:
+                    continue
+                seen_complete.add(idx)
+                on_chunk_discovered(idx)
+                chunk_queue.put((idx, r1_chunk, r2_chunk))
+
+            # Signal end-of-stream to consumers
+            for _ in range(parallelism):
+                chunk_queue.put(None)
+            return
+
+        time.sleep(_CHUNK_WATCHER_POLL_SECONDS)
+
+
+def run_chunked_strobealign_pipeline(
+    *,
+    reference_path: Path,
+    read_group_flags: list[str],
+    r1_path: Path,
+    r2_path: Path,
+    output_path: Path,
+    aligner_binary: str,
+    samtools_binary: str,
+    chunk_dir: Path,
+    chunk_reads: int,
+    parallelism: int,
+    aligner_threads_per_chunk: int,
+    sort_threads_per_chunk: int,
+    sort_memory_per_chunk: str,
+    on_progress: Optional[Callable[[ChunkPhase, int, int, int], None]] = None,
+    chunk_queue_buffer: int = 2,
+) -> list[str]:
+    """Chunked strobealign alignment orchestrator with producer/consumer overlap.
+
+    Launches pigz|split as a background subprocess and a watcher thread that
+    enqueues (r1_i, r2_i) pairs onto a bounded queue as they finish writing.
+    A ThreadPoolExecutor of `parallelism` worker threads pulls pairs from the
+    queue and runs `_align_single_chunk`. Once all chunks finish, merges the
+    per-chunk coord-sorted BAMs into output_path.
+
+    Returns the flat command log (split + per-chunk pipelines + merge).
+    """
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    commands: list[str] = []
+
+    def _emit(phase: ChunkPhase, total: int, completed: int, active: int) -> None:
+        if on_progress is not None:
+            try:
+                on_progress(phase, total, completed, active)
+            except Exception:
+                pass
+
+    _emit("splitting", 0, 0, 0)
+
+    split_procs, split_commands = _spawn_split_subprocess(
+        r1_path=r1_path,
+        r2_path=r2_path,
+        chunk_dir=chunk_dir,
+        reads_per_chunk=chunk_reads,
+    )
+    commands.extend(split_commands)
+
+    chunk_queue: "queue.Queue[Optional[tuple[int, Path, Path]]]" = queue.Queue(
+        maxsize=max(1, parallelism) + max(0, chunk_queue_buffer)
+    )
+    progress_lock = threading.Lock()
+    stop_event = threading.Event()
+    completed_count = 0
+    active_count = 0
+    total_chunks_seen = 0
+    total_chunks_final: Optional[int] = None
+    chunk_commands_by_idx: dict[int, list[str]] = {}
+    chunk_bam_by_idx: dict[int, Path] = {}
+
+    def _on_chunk_discovered(idx: int) -> None:
+        nonlocal total_chunks_seen
+        with progress_lock:
+            total_chunks_seen = max(total_chunks_seen, idx + 1)
+            _emit("splitting", total_chunks_seen, completed_count, active_count)
+
+    def _on_split_complete(final_count: int) -> None:
+        nonlocal total_chunks_final
+        with progress_lock:
+            total_chunks_final = final_count
+            _emit(
+                "aligning",
+                final_count,
+                completed_count,
+                active_count,
+            )
+
+    watcher_error: list[BaseException] = []
+
+    def _watcher_wrapper() -> None:
+        try:
+            _chunk_ready_watcher(
+                chunk_dir=chunk_dir,
+                split_procs=split_procs,
+                chunk_queue=chunk_queue,
+                parallelism=max(1, parallelism),
+                on_split_complete=_on_split_complete,
+                on_chunk_discovered=_on_chunk_discovered,
+                stop_event=stop_event,
+            )
+        except BaseException as error:
+            watcher_error.append(error)
+            # Unblock any waiting consumers on crash
+            for _ in range(max(1, parallelism)):
+                try:
+                    chunk_queue.put_nowait(None)
+                except queue.Full:
+                    pass
+
+    watcher_thread = threading.Thread(target=_watcher_wrapper, daemon=True)
+    watcher_thread.start()
+
+    def _worker() -> None:
+        nonlocal completed_count, active_count
+        while True:
+            item = chunk_queue.get()
+            if item is None:
+                return
+            idx, r1_chunk, r2_chunk = item
+            chunk_bam = chunk_dir / f"chunk_{idx:04d}.coord-sorted.bam"
+
+            with progress_lock:
+                active_count += 1
+                total = total_chunks_final or total_chunks_seen
+                _emit(
+                    "aligning" if total_chunks_final is not None else "splitting",
+                    total,
+                    completed_count,
+                    active_count,
+                )
+
+            try:
+                cmds = _align_single_chunk(
+                    reference_path=reference_path,
+                    read_group_flags=read_group_flags,
+                    r1_path=r1_chunk,
+                    r2_path=r2_chunk,
+                    output_path=chunk_bam,
+                    aligner_binary=aligner_binary,
+                    samtools_binary=samtools_binary,
+                    aligner_threads=aligner_threads_per_chunk,
+                    sort_threads=sort_threads_per_chunk,
+                    sort_memory=sort_memory_per_chunk,
+                )
+                with progress_lock:
+                    chunk_commands_by_idx[idx] = cmds
+                    chunk_bam_by_idx[idx] = chunk_bam
+                for chunk_fastq in (r1_chunk, r2_chunk):
+                    try:
+                        chunk_fastq.unlink()
+                    except OSError:
+                        pass
+            finally:
+                with progress_lock:
+                    active_count -= 1
+                    completed_count += 1
+                    total = total_chunks_final or total_chunks_seen
+                    _emit(
+                        "aligning" if total_chunks_final is not None else "splitting",
+                        total,
+                        completed_count,
+                        active_count,
+                    )
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, parallelism)) as executor:
+            worker_futures = [
+                executor.submit(_worker) for _ in range(max(1, parallelism))
+            ]
+            # Wait for watcher first (will push sentinels when split exits)
+            watcher_thread.join()
+            if watcher_error:
+                stop_event.set()
+                for future in worker_futures:
+                    future.cancel()
+                raise watcher_error[0]
+            for future in worker_futures:
+                future.result()
+    except BaseException:
+        stop_event.set()
+        # Kill any surviving split procs
+        for proc in split_procs:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait()
+                except Exception:
+                    pass
+        for leftover in chunk_dir.glob("chunk_*.coord-sorted.bam*"):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
+        raise
+
+    # Emit deterministic command log order
+    for idx in sorted(chunk_commands_by_idx):
+        commands.extend(chunk_commands_by_idx[idx])
+
+    total_chunks = len(chunk_bam_by_idx)
+    if total_chunks == 0:
+        raise RuntimeError("Chunked alignment produced no chunks")
+    chunk_bams = [chunk_bam_by_idx[idx] for idx in sorted(chunk_bam_by_idx)]
+
+    _emit("merging", total_chunks, total_chunks, 0)
+
+    merge_command = [
+        samtools_binary,
+        "merge",
+        "-@",
+        str(max(1, sort_threads_per_chunk * 2)),
+        "-c",
+        "-p",
+        "-f",
+        str(output_path),
+        *[str(path) for path in chunk_bams],
+    ]
+    merge_stderr_path = output_path.with_suffix(output_path.suffix + ".samtools-merge.stderr.log")
+    with merge_stderr_path.open("wb") as merge_stderr_handle:
+        merge_proc = subprocess.run(
+            merge_command,
+            stdout=subprocess.DEVNULL,
+            stderr=merge_stderr_handle,
+        )
+    if merge_proc.returncode != 0:
+        merge_text = merge_stderr_path.read_text(errors="replace").strip()
+        raise RuntimeError(
+            f"samtools merge failed (rc={merge_proc.returncode}): {merge_text or '<empty>'}"
+        )
+    commands.append(quote_command(merge_command))
+
+    for chunk_bam in chunk_bams:
+        try:
+            chunk_bam.unlink()
+        except OSError:
+            pass
+        for suffix in (".strobealign.stderr.log", ".fixmate.stderr.log", ".samtools-sort.stderr.log"):
+            leftover = chunk_bam.with_suffix(chunk_bam.suffix + suffix)
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
+
+    return commands
 
 
 def parse_flagstat(flagstat_text: str) -> tuple[int, int, float, Optional[float]]:
@@ -979,6 +1635,7 @@ def execute_alignment_lane(
     *,
     workspace_display_name: str,
     workspace_id: str,
+    run_id: str,
     sample_lane: SampleLane,
     reference_path: Path,
     r1_path: Path,
@@ -989,55 +1646,66 @@ def execute_alignment_lane(
     samtools_binary = os.getenv("SAMTOOLS_BINARY", "samtools")
     read_group_flags = build_read_group(workspace_display_name, workspace_id, sample_lane)
 
-    name_sorted_bam = working_dir / f"{sample_lane.value}.name-sorted.bam"
-    fixmate_bam = working_dir / f"{sample_lane.value}.fixmate.bam"
     coordinate_bam = working_dir / f"{sample_lane.value}.coord-sorted.bam"
     final_bam = working_dir / f"{sample_lane.value}.aligned.bam"
     final_bai = working_dir / f"{sample_lane.value}.aligned.bam.bai"
     flagstat_path = working_dir / f"{sample_lane.value}.flagstat.txt"
     idxstats_path = working_dir / f"{sample_lane.value}.idxstats.txt"
     stats_path = working_dir / f"{sample_lane.value}.stats.txt"
+    chunk_dir = working_dir / f"{sample_lane.value}.chunks"
 
-    command_log = run_strobealign_name_sort_pipeline(
+    parallelism = get_alignment_chunk_parallelism()
+    aligner_threads_per_chunk = max(
+        1, get_aligner_thread_count() // max(1, parallelism)
+    )
+
+    def _on_progress(phase: ChunkPhase, total: int, completed: int, active: int) -> None:
+        record_chunk_progress(
+            run_id,
+            sample_lane,
+            phase=phase,
+            total=total,
+            completed=completed,
+            active=active,
+        )
+
+    command_log = run_chunked_strobealign_pipeline(
         reference_path=reference_path,
         read_group_flags=read_group_flags,
         r1_path=r1_path,
         r2_path=r2_path,
-        output_path=name_sorted_bam,
+        output_path=coordinate_bam,
         aligner_binary=aligner_binary,
         samtools_binary=samtools_binary,
+        chunk_dir=chunk_dir,
+        chunk_reads=get_alignment_chunk_reads(),
+        parallelism=parallelism,
+        aligner_threads_per_chunk=aligner_threads_per_chunk,
+        sort_threads_per_chunk=get_samtools_sort_thread_count(),
+        sort_memory_per_chunk=get_samtools_sort_memory(),
+        on_progress=_on_progress,
     )
 
-    fixmate_command = [
-        samtools_binary,
-        "fixmate",
-        "-m",
-        str(name_sorted_bam),
-        str(fixmate_bam),
-    ]
-    run_command(fixmate_command)
-    command_log.append(quote_command(fixmate_command))
-
-    sort_command = [
-        samtools_binary,
-        "sort",
-        "-o",
-        str(coordinate_bam),
-        str(fixmate_bam),
-    ]
-    run_command(sort_command)
-    command_log.append(quote_command(sort_command))
+    samtools_threads_str = str(get_samtools_thread_count())
 
     markdup_command = [
         samtools_binary,
         "markdup",
+        "-@",
+        samtools_threads_str,
         str(coordinate_bam),
         str(final_bam),
     ]
     run_command(markdup_command)
     command_log.append(quote_command(markdup_command))
 
-    index_command = [samtools_binary, "index", str(final_bam)]
+    index_command = [
+        samtools_binary,
+        "index",
+        "-@",
+        samtools_threads_str,
+        str(final_bam),
+    ]
     run_command(index_command)
     command_log.append(quote_command(index_command))
 
@@ -1315,7 +1983,12 @@ def run_alignment(
         )
 
         lane_outputs: list[LaneExecutionOutput] = []
-        with tempfile.TemporaryDirectory(prefix=f"alignment-{run_id}-") as temp_dir_name:
+        alignment_tmp_root = get_app_data_root() / "tmp"
+        alignment_tmp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=f"alignment-{run_id}-",
+            dir=str(alignment_tmp_root),
+        ) as temp_dir_name:
             temp_dir = Path(temp_dir_name)
             for index, sample_lane in enumerate(LANES, start=1):
                 lane_input = inputs.lanes[sample_lane]
@@ -1325,6 +1998,7 @@ def run_alignment(
                     execute_alignment_lane(
                         workspace_display_name=inputs.workspace_display_name,
                         workspace_id=inputs.workspace_id,
+                        run_id=run_id,
                         sample_lane=sample_lane,
                         reference_path=reference_path,
                         r1_path=lane_input.r1_path,
@@ -1347,6 +2021,8 @@ def run_alignment(
             persist_alignment_run_success(workspace_id, run_id, lane_outputs)
     except Exception as error:
         mark_alignment_run_failed(workspace_id, run_id, str(error))
+    finally:
+        clear_chunk_progress(run_id)
 
 
 def load_alignment_artifact_download(

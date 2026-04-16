@@ -19,6 +19,8 @@
     "research:dry-run": "python3 scripts/run_research_intelligence.py --dry-run",
     "sample-data:smoke": "python3 scripts/fetch_seqc2_sample_data.py --mode smoke",
     "sample-data:full": "python3 scripts/fetch_seqc2_sample_data.py --mode full",
+    "sample-data:wgs-smoke": "python3 scripts/fetch_colo829_sample_data.py --mode smoke",
+    "sample-data:wgs-full": "python3 scripts/fetch_colo829_sample_data.py --mode full",
     "sample-data:alignment": "python3 scripts/fetch_alignment_container_smoke_data.py"
   },
   "dependencies": {

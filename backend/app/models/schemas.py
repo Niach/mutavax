@@ -254,6 +254,19 @@ class AlignmentArtifactResponse(BaseModel):
     local_path: Optional[str] = None
 
 
+class ChunkProgressPhase(str, Enum):
+    SPLITTING = "splitting"
+    ALIGNING = "aligning"
+    MERGING = "merging"
+
+
+class ChunkProgressStateResponse(BaseModel):
+    phase: ChunkProgressPhase
+    total_chunks: int = 0
+    completed_chunks: int = 0
+    active_chunks: int = 0
+
+
 class AlignmentRunResponse(BaseModel):
     id: str
     status: AlignmentRunStatus
@@ -272,6 +285,9 @@ class AlignmentRunResponse(BaseModel):
     error: Optional[str] = None
     command_log: List[str] = Field(default_factory=list)
     lane_metrics: Dict[SampleLane, AlignmentLaneMetricsResponse] = Field(
+        default_factory=dict
+    )
+    chunk_progress: Dict[SampleLane, ChunkProgressStateResponse] = Field(
         default_factory=dict
     )
     artifacts: List[AlignmentArtifactResponse] = Field(default_factory=list)

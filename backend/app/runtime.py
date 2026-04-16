@@ -1,9 +1,14 @@
+import json
 import os
 import sys
+import threading
 from pathlib import Path
+from typing import Any
 
 
 APP_NAME = "cancerstudio"
+
+_settings_lock = threading.Lock()
 
 
 def _default_app_data_root() -> Path:
@@ -80,3 +85,46 @@ def is_path_within_app_data(path: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _settings_path() -> Path:
+    return get_app_data_root() / "settings.json"
+
+
+def _read_settings_file() -> dict[str, Any]:
+    path = _settings_path()
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_runtime_setting(key: str) -> Any | None:
+    with _settings_lock:
+        return _read_settings_file().get(key)
+
+
+def load_runtime_settings() -> dict[str, Any]:
+    with _settings_lock:
+        return dict(_read_settings_file())
+
+
+def save_runtime_settings(updates: dict[str, Any], *, reset: bool = False) -> dict[str, Any]:
+    with _settings_lock:
+        current: dict[str, Any] = {} if reset else _read_settings_file()
+        for key, value in updates.items():
+            if value is None:
+                current.pop(key, None)
+            else:
+                current[key] = value
+        path = _settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(".json.tmp")
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            json.dump(current, handle, indent=2, sort_keys=True)
+        tmp_path.replace(path)
+        return dict(current)

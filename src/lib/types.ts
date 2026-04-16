@@ -188,6 +188,15 @@ export interface AlignmentArtifact {
   localPath?: string | null;
 }
 
+export type ChunkProgressPhase = "splitting" | "aligning" | "merging";
+
+export interface ChunkProgressState {
+  phase: ChunkProgressPhase;
+  totalChunks: number;
+  completedChunks: number;
+  activeChunks: number;
+}
+
 export interface AlignmentRun {
   id: string;
   status: AlignmentRunStatus;
@@ -206,6 +215,7 @@ export interface AlignmentRun {
   error?: string | null;
   commandLog: string[];
   laneMetrics: Partial<Record<SampleLane, AlignmentLaneMetrics>>;
+  chunkProgress: Partial<Record<SampleLane, ChunkProgressState>>;
   artifacts: AlignmentArtifact[];
 }
 
@@ -226,6 +236,32 @@ export interface SystemMemoryResponse {
   totalBytes: number | null;
   thresholdBytes: number;
 }
+
+export interface SystemResourcesResponse {
+  cpuCount: number;
+  totalMemoryBytes: number | null;
+  availableMemoryBytes: number | null;
+  appDataDiskTotalBytes: number | null;
+  appDataDiskFreeBytes: number | null;
+  appDataRoot: string;
+}
+
+export interface AlignmentSettingsDefaults {
+  alignerThreads: number;
+  samtoolsThreads: number;
+  samtoolsSortThreads: number;
+  samtoolsSortMemory: string;
+  chunkReads: number;
+  chunkParallelism: number;
+}
+
+export interface AlignmentSettings extends AlignmentSettingsDefaults {
+  defaults: AlignmentSettingsDefaults;
+}
+
+export type AlignmentSettingsPatch = Partial<AlignmentSettingsDefaults> & {
+  reset?: boolean;
+};
 
 export interface DLAAllele {
   name: string;

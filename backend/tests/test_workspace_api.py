@@ -414,6 +414,7 @@ async def test_alignment_run_persists_local_artifacts_and_unlocks_variant_stage(
         *,
         workspace_display_name: str,
         workspace_id: str,
+        run_id: str,
         sample_lane: SampleLane,
         reference_path: Path,
         r1_path: Path,
