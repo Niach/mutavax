@@ -30,12 +30,10 @@ async function waitForContent(page: Page, marker: string) {
 test.beforeEach(async ({ page }) => {
   // Silence any page error popups from desktop bridge absence
   await page.addInitScript(() => {
-    // Minimal stub so components checking for the bridge don't throw
-    const noop = async () => [];
     (window as unknown as { cancerstudioDesktop?: unknown }).cancerstudioDesktop = {
-      pickSequencingFiles: noop,
       openPath: async () => {},
       getAppDataPath: async () => "",
+      getDataRoot: async () => "",
     };
   });
 });

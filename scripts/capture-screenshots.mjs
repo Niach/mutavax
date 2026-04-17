@@ -81,7 +81,6 @@ const ROSIE = {
   display_name: "Rosie baseline",
   species: "dog",
   analysis_profile: {
-    assay_type: "wgs",
     reference_preset: "canfam4",
     reference_override: null,
   },
@@ -102,7 +101,6 @@ const HCC = {
   display_name: "HCC1395 benchmark",
   species: "human",
   analysis_profile: {
-    assay_type: "wgs",
     reference_preset: "grch38",
     reference_override: null,
   },
@@ -123,7 +121,6 @@ const FELIX = {
   display_name: "Felix intake",
   species: "cat",
   analysis_profile: {
-    assay_type: "wgs",
     reference_preset: "felcat9",
     reference_override: null,
   },
@@ -207,7 +204,6 @@ function alignmentSummaryCompleted(workspace) {
       id: "run-01",
       status: "completed",
       progress: 1,
-      assay_type: "wgs",
       reference_preset: workspace.analysis_profile.reference_preset,
       reference_override: null,
       reference_label: "CanFam4 (UU_Cfam_GSD_1.0)",

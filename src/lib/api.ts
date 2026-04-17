@@ -7,7 +7,6 @@ import type {
   AlignmentStageSummary,
   AlignmentRun,
   AnalysisProfile,
-  AssayType,
   ChunkProgressPhase,
   ChunkProgressState,
   CreateWorkspaceInput,
@@ -91,7 +90,6 @@ type IngestionSummaryDto = {
 };
 
 type AnalysisProfileDto = {
-  assay_type?: AssayType | null;
   reference_preset?: ReferencePreset | null;
   reference_override?: string | null;
 };
@@ -166,7 +164,6 @@ type AlignmentRunDto = {
   id: string;
   status: AlignmentRun["status"];
   progress: number;
-  assay_type?: AssayType | null;
   reference_preset?: ReferencePreset | null;
   reference_override?: string | null;
   reference_label?: string | null;
@@ -301,6 +298,9 @@ type VariantCallingRunDto = {
   command_log: string[];
   metrics?: VariantCallingMetricsDto | null;
   artifacts: VariantCallingArtifactDto[];
+  completed_shards?: number;
+  total_shards?: number;
+  acceleration_mode?: "gpu_parabricks" | "cpu_gatk";
 };
 
 type VariantCallingStageSummaryDto = {
@@ -387,7 +387,6 @@ function mapIngestionSummary(dto: IngestionSummaryDto): IngestionSummary {
 
 function mapAnalysisProfile(dto: AnalysisProfileDto): AnalysisProfile {
   return {
-    assayType: dto.assay_type ?? null,
     referencePreset: dto.reference_preset ?? null,
     referenceOverride: dto.reference_override ?? null,
   };
@@ -518,7 +517,6 @@ function mapAlignmentRun(dto: AlignmentRunDto): AlignmentRun {
     id: dto.id,
     status: dto.status,
     progress: dto.progress,
-    assayType: dto.assay_type ?? null,
     referencePreset: dto.reference_preset ?? null,
     referenceOverride: dto.reference_override ?? null,
     referenceLabel: dto.reference_label ?? null,
@@ -622,6 +620,9 @@ function mapVariantCallingRun(dto: VariantCallingRunDto): VariantCallingRun {
         }
       : null,
     artifacts: dto.artifacts.map(mapVariantCallingArtifact),
+    completedShards: dto.completed_shards ?? 0,
+    totalShards: dto.total_shards ?? 0,
+    accelerationMode: dto.acceleration_mode ?? "cpu_gatk",
   };
 }
 
@@ -877,8 +878,56 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+export interface InboxEntry {
+  name: string;
+  path: string;
+  sizeBytes: number;
+  modifiedAt: string;
+  kind: "fastq" | "bam" | "cram" | "unknown";
+}
+
+export interface InboxListing {
+  root: string;
+  entries: InboxEntry[];
+}
+
+type InboxEntryDto = {
+  name: string;
+  path: string;
+  size_bytes: number;
+  modified_at: string;
+  kind: string;
+};
+
+type InboxListingDto = {
+  root: string;
+  entries: InboxEntryDto[];
+};
+
+function mapInboxEntry(dto: InboxEntryDto): InboxEntry {
+  const kind: InboxEntry["kind"] =
+    dto.kind === "fastq" || dto.kind === "bam" || dto.kind === "cram"
+      ? dto.kind
+      : "unknown";
+  return {
+    name: dto.name,
+    path: dto.path,
+    sizeBytes: dto.size_bytes,
+    modifiedAt: dto.modified_at,
+    kind,
+  };
+}
+
 export const api = {
   health: () => request<{ status: string }>("/health"),
+
+  listInbox: async (): Promise<InboxListing> => {
+    const dto = await request<InboxListingDto>("/api/inbox");
+    return {
+      root: dto.root,
+      entries: dto.entries.map(mapInboxEntry),
+    };
+  },
 
   listWorkspaces: async () =>
     (await request<WorkspaceDto[]>("/api/workspaces")).map(mapWorkspace),
@@ -900,7 +949,6 @@ export const api = {
         body: JSON.stringify({
           display_name: input.displayName,
           species: input.species,
-          assay_type: input.assayType ?? null,
         }),
       })
     ),
@@ -949,7 +997,6 @@ export const api = {
         {
           method: "PATCH",
           body: JSON.stringify({
-            assay_type: profile.assayType,
             reference_preset: profile.referencePreset,
             reference_override: profile.referenceOverride,
           }),
@@ -1021,6 +1068,20 @@ export const api = {
     mapVariantCallingStageSummary(
       await request<VariantCallingStageSummaryDto>(
         `/api/workspaces/${workspaceId}/variant-calling/runs/${runId}/cancel`,
+        { method: "POST" }
+      )
+    ),
+  pauseVariantCalling: async (workspaceId: string, runId: string) =>
+    mapVariantCallingStageSummary(
+      await request<VariantCallingStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/variant-calling/runs/${runId}/pause`,
+        { method: "POST" }
+      )
+    ),
+  resumeVariantCalling: async (workspaceId: string, runId: string) =>
+    mapVariantCallingStageSummary(
+      await request<VariantCallingStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/variant-calling/runs/${runId}/resume`,
         { method: "POST" }
       )
     ),

@@ -4,11 +4,12 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import { api, MissingToolsError } from "@/lib/api";
-import { getDesktopBridge } from "@/lib/desktop";
 import type { SampleLane, Workspace } from "@/lib/types";
 
 import { IngestionHeader } from "./ingestion/IngestionHeader";
+import InboxPicker from "./ingestion/InboxPicker";
 import { LaneAccordionSection } from "./ingestion/LaneAccordionSection";
+import { formatLaneLabel } from "@/lib/workspace-utils";
 import {
   LANES,
   emptyPreviewState,
@@ -35,12 +36,8 @@ export default function IngestionStagePanel({
     tumor: emptyPreviewState(),
     normal: emptyPreviewState(),
   });
-  const [desktopAvailable, setDesktopAvailable] = useState(false);
   const [missingTools, setMissingTools] = useState<MissingToolsError | null>(null);
-
-  useEffect(() => {
-    setDesktopAvailable(Boolean(getDesktopBridge()));
-  }, []);
+  const [pickerLane, setPickerLane] = useState<SampleLane | null>(null);
 
   const alignmentState = workspace.ingestion.readyForAlignment ? "unlocked" : "locked";
 
@@ -173,21 +170,16 @@ export default function IngestionStagePanel({
     }
   }
 
-  async function handlePick(sampleLane: SampleLane) {
+  function handlePick(sampleLane: SampleLane) {
     setActiveLane(sampleLane);
-    const desktop = getDesktopBridge();
-    if (!desktop) {
-      setLaneErrors((current) => ({
-        ...current,
-        [sampleLane]: "Open this workspace in the desktop app to pick local files.",
-      }));
-      return;
-    }
-    const selected = await desktop.pickSequencingFiles();
-    await registerPaths(
-      sampleLane,
-      selected.map((file) => file.path)
-    );
+    setPickerLane(sampleLane);
+  }
+
+  async function handlePickerConfirm(paths: string[]) {
+    if (!pickerLane) return;
+    const lane = pickerLane;
+    setPickerLane(null);
+    await registerPaths(lane, paths);
   }
 
   return (
@@ -233,17 +225,24 @@ export default function IngestionStagePanel({
               files={files}
               isExpanded={isActive}
               onHeaderClick={() => setActiveLane(lane)}
-              onPickFiles={() => void handlePick(lane)}
+              onPickFiles={() => handlePick(lane)}
               isSubmitting={submittingLane === lane}
               laneError={laneErrors[lane]}
               previewState={previewStates[lane]}
               onRetryPreview={() => void loadLanePreview(lane)}
-              desktopAvailable={desktopAvailable}
+              desktopAvailable={true}
               showLegend={isActive && previewStates[lane].phase === "ready"}
             />
           );
         })}
       </div>
+
+      <InboxPicker
+        open={pickerLane !== null}
+        laneLabel={pickerLane ? formatLaneLabel(pickerLane).toLowerCase() : ""}
+        onClose={() => setPickerLane(null)}
+        onConfirm={(paths) => void handlePickerConfirm(paths)}
+      />
     </div>
   );
 }

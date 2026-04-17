@@ -84,7 +84,7 @@ backend/tests/test_real_data_ingestion.py — real-data smoke coverage
 | GET | `/api/workspaces` | List all workspaces |
 | POST | `/api/workspaces` | Create workspace |
 | GET | `/api/workspaces/{id}` | Get workspace with files and ingestion summary |
-| PATCH | `/api/workspaces/{id}/analysis-profile` | Set assay/reference choices |
+| PATCH | `/api/workspaces/{id}/analysis-profile` | Set reference preset / override |
 | PATCH | `/api/workspaces/{id}/active-stage` | Update active stage |
 | POST | `/api/workspaces/{id}/ingestion/local-files` | Register local FASTQ/BAM/CRAM files |
 | GET | `/api/workspaces/{id}/ingestion/preview/{sample_lane}` | Preview canonical reads |
@@ -102,7 +102,7 @@ backend/tests/test_real_data_ingestion.py — real-data smoke coverage
 ```
 Workspace
   ├── id, displayName, species (human | dog | cat), activeStage, createdAt, updatedAt
-  ├── analysisProfile: assayType + referencePreset/referenceOverride
+  ├── analysisProfile: referencePreset/referenceOverride
   ├── ingestion: IngestionSummary (status, readyForAlignment, sourceFileCount, ...)
   └── files: WorkspaceFile[]
         ├── id, batchId, filename, format (fastq | bam | cram)

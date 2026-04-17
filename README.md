@@ -50,17 +50,18 @@ Tool names live in the Technical details drawer. The primary CTA is *Find mutati
 
 ## How it works
 
-- Desktop-first runtime: Electron shell + local Next.js renderer + local FastAPI pipeline engine. No cloud, no Docker, no object storage.
-- Reference-in-place intake: your source FASTQ/BAM/CRAM files stay where they live. Only derived artifacts (canonical FASTQ, BAM/BAI, QC, reference bundles, SQLite) land in the app-data directory.
+- Desktop-first runtime: Electron shell + local Next.js renderer + a single all-in-one Docker container that bundles the FastAPI engine and every bioinformatics tool (samtools, pigz, strobealign, GATK, NVIDIA Parabricks). No cloud, no object storage.
+- Inbox intake: drop FASTQ/BAM/CRAM files into `<data-root>/inbox/` (the path you pick on first launch) and the app lists them for registration into a workspace — no OS file-picker, no host-path plumbing.
 - Species presets: human `GRCh38`, dog `CanFam4`, cat `felCat9`. Missing references are downloaded and indexed on first alignment.
 - Paired-lane model: tumor and normal are separate lanes. Alignment unlocks only when both lanes are ready; a QC pass unlocks variant calling, while `warn` or `fail` keeps the workflow blocked in plain language.
+- GPU-accelerated variant calling: when the container sees an NVIDIA GPU, stage 3 runs NVIDIA Parabricks `mutectcaller` (5–15× faster than CPU Mutect2 on a single RTX 4090). Without a GPU it falls back to CPU GATK Mutect2 in the same image.
 
 ## Stack
 
 - Frontend: Next.js 15.5, React 19, TypeScript, Tailwind CSS
 - Desktop shell: Electron
-- Backend: FastAPI, SQLAlchemy, samtools, pigz, strobealign, GATK Mutect2
-- Storage: local filesystem + SQLite
+- Backend: FastAPI + SQLAlchemy + samtools, pigz, strobealign, GATK Mutect2, NVIDIA Parabricks (all shipped in one container image)
+- Storage: local filesystem + SQLite under a user-chosen data root
 
 ## Local development
 
@@ -68,32 +69,24 @@ Install dependencies once:
 
 ```bash
 npm install
-python -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
+docker compose build       # ~10 GB image, first build is slow
 ```
 
 Run the desktop app in development:
 
 ```bash
+docker compose up -d       # backend container on :8000
+npm run desktop:frontend   # Next.js on :3000
+npm run desktop:electron   # Electron shell
+```
+
+Or all three in one go once the image is built:
+
+```bash
 npm run desktop:dev
 ```
 
-This starts:
-
-- Next.js on `127.0.0.1:3000`
-- FastAPI on `127.0.0.1:8000`
-- Electron once both services are healthy
-
-If you want the processes split out manually:
-
-```bash
-npm run desktop:frontend
-npm run desktop:backend
-npm run desktop:electron
-```
-
-JetBrains users can run the shared `Cancerstudio Electron App` config from `.run/`.
+The backend container bind-mounts `<data-root>` (defaults to `~/cancerstudio-data`, override via `CANCERSTUDIO_DATA_ROOT` in `.env`) at `/app-data` and `<data-root>/inbox/` at `/inbox`. Backend source in `backend/app` is bind-mounted for `uvicorn --reload`. Python tests run against the container: `docker compose run --rm backend pytest`.
 
 ## Environment
 
@@ -108,51 +101,45 @@ If you do not set `REFERENCE_*_FASTA`, cancerstudio caches preset references und
 
 ## System requirements
 
-cancerstudio shells out to bioinformatics binaries from the FastAPI backend. They must be on `PATH` (or pointed at via the env overrides below) before the live pipeline stages can run.
+cancerstudio ships the entire backend — FastAPI, samtools, pigz, strobealign, GATK Mutect2, and NVIDIA Parabricks — in a single Docker image built on top of `nvcr.io/nvidia/clara/clara-parabricks:4.7.0-1`. The host only needs Docker (and, for GPU variant calling, the NVIDIA driver + container toolkit).
 
-| Tool | Purpose | Used by |
-|------|---------|---------|
-| `samtools` ≥ 1.16 | BAM/CRAM normalization, sort, index, flagstat, idxstats, stats, markdup, merge | Ingestion + Alignment |
-| `strobealign` ≥ 0.17 | Reference indexing and paired-end alignment | Alignment |
-| `pigz` ≥ 2.6 | Multithreaded FASTQ compression, parallel chunk splitting | Ingestion + Alignment |
-| `gatk` ≥ 4.5 (+ JDK 17) | Mutect2 + FilterMutectCalls + CreateSequenceDictionary | Variant Calling |
+| Requirement | Why |
+|-------------|-----|
+| Docker Engine ≥ 24.0 (Linux) or Docker Desktop (macOS / Windows) | Runs the backend container |
+| NVIDIA driver ≥ 570 + `nvidia-container-toolkit` (optional) | Enables GPU variant calling via Parabricks `mutectcaller`; without it stage 3 falls back to CPU GATK Mutect2 |
+| ≥ 35 GB free RAM at first alignment | `strobealign --create-index` peaks at ~31 GB while building the human index. The backend refuses to start indexing below this threshold so the host doesn't get pushed into swap. |
 
-If any required tool is missing the backend rejects the relevant API call up-front with a structured `503 missing_tools` response, and the UI surfaces a friendly callout listing what to install — no more raw `[Errno 2]` stack traces.
-
-### Install on Ubuntu / Debian / Linux Mint
-
-A helper script handles all four. It pulls `samtools` + `pigz` + `openjdk-17-jre-headless` + the build toolchain from apt, builds `strobealign` v0.17.0 from source, and drops GATK 4.5.0.0 into `/usr/local/gatk`:
+### Install Docker + NVIDIA toolkit on Ubuntu / Debian / Linux Mint
 
 ```bash
-sudo bash scripts/install-bioinformatics-deps.sh
+# Docker Engine
+curl -fsSL https://get.docker.com | sudo bash
+sudo usermod -aG docker "$USER"
+
+# NVIDIA Container Toolkit (skip on non-GPU hosts)
+distribution=$(. /etc/os-release; echo $ID$VERSION_ID)
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
 ```
 
-### Install on macOS
+### macOS / Windows
 
-```bash
-brew install samtools pigz strobealign openjdk@17
-brew install --cask gatk     # or download from broadinstitute/gatk releases
-```
-
-> **Memory warning for the first alignment run.** `strobealign --create-index` peaks at roughly **31 GB of RAM** while building `genome.fa.r150.sti`. The backend refuses to start indexing if `/proc/meminfo` reports less than 35 GB available, so your box won't get pushed into swap. If you're on a modest machine, close your browser, IDE, and dev servers before hitting *Start alignment* the first time — or run `scripts/prepare-reference.sh` from a clean terminal to finish the index in isolation. Once the index is on disk the backend detects it on subsequent runs and skips bootstrapping entirely. The same script also runs `gatk CreateSequenceDictionary` so variant calling can use the reference on first run.
+Install Docker Desktop. GPU-accelerated variant calling on macOS/Windows is currently not supported — stage 3 will run on CPU. On a GPU-less host everything else (ingestion, alignment, CPU variant calling) still works.
 
 ### Verify
 
 ```bash
-samtools --version | head -1
-strobealign --version
-pigz --version
-gatk --version   # optional today; needed once stage 3 becomes runnable
+docker --version
+nvidia-smi              # optional; only needed for GPU variant calling
+docker compose up -d    # pulls/builds the backend image, starts FastAPI on :8000
+curl http://127.0.0.1:8000/health
 ```
-
-### Env overrides
-
-Useful when you have non-standard binary locations or want to point at a specific build:
-
-- `SAMTOOLS_BINARY` — absolute path or alternate command name (default `samtools`)
-- `ALIGNMENT_STROBEALIGN_BINARY` — absolute path or alternate command name (default `strobealign`)
-- `PIGZ_BINARY` — absolute path or alternate command name (default `pigz`)
-- `PIGZ_THREADS` — worker count for pigz compression
 
 Alignment compute is also tunable at runtime from the UI (Compute settings section on the alignment stage) — no env file edit needed. The overrides persist to `{CANCERSTUDIO_APP_DATA_DIR}/settings.json`:
 
@@ -196,14 +183,13 @@ npm run test:backend:real-data
 npm run test:browser:real-data
 ```
 
-The live real-data path uses the matched SEQC2 tumor/normal FASTQ smoke pair by default. Opt-in live alignment still requires local `samtools`, `strobealign`, and `pigz`, downloads and indexes `GRCh38` on first run unless `REFERENCE_GRCH38_FASTA` is already set, and only runs when `REAL_DATA_RUN_ALIGNMENT=1`.
+The live real-data path uses the COLO829 matched tumor/normal WGS smoke pair by default. Opt-in live alignment still requires local `samtools`, `strobealign`, and `pigz`, downloads and indexes `GRCh38` on first run unless `REFERENCE_GRCH38_FASTA` is already set, and only runs when `REAL_DATA_RUN_ALIGNMENT=1`.
 
 ## Sample data
 
 The repo includes helpers for public smoke fixtures:
 
-- SEQC2 human tumor/normal FASTQ smoke data for ingestion and opt-in live alignment smoke
-- COLO829/COLO829BL matched melanoma pair (ENA PRJEB27698) — full 100× tumor + 38× normal WGS for validating the chunked alignment pipeline at production scale
+- COLO829/COLO829BL matched melanoma pair (ENA PRJEB27698) — smoke subset plus the full 100× tumor + 38× normal WGS for validating the chunked alignment pipeline at production scale
 - a tiny BAM/CRAM smoke dataset for local normalization checks only
 
 The COLO829 full fetch is ~174 GB compressed. Per-file md5s are checked against ENA-published values on download so silent corruption fails loudly.
@@ -211,8 +197,7 @@ The COLO829 full fetch is ~174 GB compressed. Per-file md5s are checked against 
 Download with:
 
 ```bash
-npm run sample-data:smoke         # SEQC2 WES smoke (~50k read pairs per lane)
-npm run sample-data:wgs-smoke     # COLO829 smoke (~50k read pairs per lane)
-npm run sample-data:wgs-full      # COLO829 full 100x WGS (~174 GB)
+npm run sample-data:smoke         # COLO829 smoke (~50k read pairs per lane)
+npm run sample-data:full          # COLO829 full 100x WGS (~174 GB)
 npm run sample-data:alignment     # BAM/CRAM normalization fixture
 ```

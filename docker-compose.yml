@@ -1,0 +1,52 @@
+# Dev orchestration for the all-in-one backend image.
+#
+#   docker compose build      # build cancerstudio-backend:dev
+#   docker compose up         # start FastAPI on :8000 with GPU + hot reload
+#   docker compose run --rm backend pytest -m "not integration and not real_data"
+#
+# Expected host-side layout (override via .env if you want a different root):
+#   ${CANCERSTUDIO_DATA_ROOT:-$HOME/cancerstudio-data}/
+#     ├── inbox/                  # user drops FASTQ/BAM/CRAM here
+#     ├── workspaces/             # per-workspace artifacts
+#     ├── references/             # reference FASTAs + indexes
+#     └── app.db                  # SQLite
+#
+# On a machine without NVIDIA drivers, remove the `deploy:` block so the
+# backend comes up in CPU-only mode (variant calling falls back to GATK).
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: cancerstudio-backend:dev
+    container_name: cancerstudio-backend
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+    environment:
+      CANCERSTUDIO_APP_DATA_DIR: /app-data
+      CANCERSTUDIO_INBOX_DIR: /inbox
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ${CANCERSTUDIO_DATA_ROOT:-~/cancerstudio-data}:/app-data
+      - ${CANCERSTUDIO_DATA_ROOT:-~/cancerstudio-data}/inbox:/inbox
+      # Source bind mounts for hot reload during dev. In production builds
+      # the COPYd /app/app layer is authoritative; these just shadow it.
+      - ./backend/app:/app/app
+      - ./backend/tests:/app/tests
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

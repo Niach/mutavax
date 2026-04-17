@@ -26,7 +26,6 @@ from app.models.records import (
 )
 from app.models.schemas import (
     ActiveStageUpdateRequest,
-    AnalysisAssayType,
     FastqReadPreview,
     IngestionLaneProgressResponse,
     IngestionProgressPhase,
@@ -295,17 +294,11 @@ def default_reference_preset_for_species(species: str) -> ReferencePreset:
 
 
 def serialize_analysis_profile(workspace: WorkspaceRecord) -> WorkspaceAnalysisProfileResponse:
-    assay_type = (
-        AnalysisAssayType(workspace.assay_type)
-        if workspace.assay_type
-        else None
-    )
     reference_preset_value = (
         workspace.reference_preset or default_reference_preset_for_species(workspace.species).value
     )
     reference_preset = ReferencePreset(reference_preset_value)
     return WorkspaceAnalysisProfileResponse(
-        assay_type=assay_type,
         reference_preset=reference_preset,
         reference_override=workspace.reference_override,
     )
@@ -967,7 +960,6 @@ def create_workspace(request: WorkspaceCreateRequest) -> WorkspaceResponse:
             id=str(uuid.uuid4()),
             display_name=display_name,
             species=request.species.value,
-            assay_type=request.assay_type.value if request.assay_type else None,
             reference_preset=default_reference_preset_for_species(request.species.value).value,
             reference_override=None,
             active_stage=PipelineStageId.INGESTION.value,
@@ -997,7 +989,6 @@ def update_workspace_analysis_profile(
 ) -> WorkspaceResponse:
     with session_scope() as session:
         workspace = get_workspace_record(session, workspace_id)
-        workspace.assay_type = request.assay_type.value
         workspace.reference_preset = (
             request.reference_preset.value
             if request.reference_preset is not None
@@ -1225,7 +1216,6 @@ def reset_workspace_ingestion(workspace_id: str) -> WorkspaceResponse:
             session.delete(batch)
 
         workspace.active_stage = PipelineStageId.INGESTION.value
-        workspace.assay_type = None
         workspace.reference_preset = default_reference_preset_for_species(workspace.species).value
         workspace.reference_override = None
         workspace.updated_at = utc_now()

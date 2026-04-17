@@ -146,11 +146,6 @@ async def prepare_alignment_ready_workspace(
         )
         run_next_normalization(queued_batches)
 
-    update_profile = await client.patch(
-        f"/api/workspaces/{workspace['id']}/analysis-profile",
-        json={"assay_type": "wgs"},
-    )
-    assert update_profile.status_code == 200, update_profile.text
     return workspace
 
 
@@ -734,3 +729,196 @@ async def test_variant_calling_run_creates_pending_record_after_alignment(
 
     assert len(variant_run_statuses) == 1
     assert variant_run_statuses[0] == "pending"
+
+
+@pytest.mark.anyio
+async def test_variant_calling_pause_preserves_shards_and_resume_restores_pending(
+    client: httpx.AsyncClient,
+    queued_batches: list[tuple[str, str]],
+    queued_alignment_runs: list[tuple[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from app.runtime import get_variant_calling_run_root
+    from app.services import variant_calling as variant_calling_service
+
+    workspace = await prepare_alignment_ready_workspace(client, queued_batches, tmp_path)
+    install_fake_alignment(monkeypatch, tmp_path)
+
+    summary_response = await client.post(
+        f"/api/workspaces/{workspace['id']}/alignment/run"
+    )
+    assert summary_response.status_code == 200, summary_response.text
+    queued_workspace_id, alignment_run_id = queued_alignment_runs.pop(0)
+    alignment_service.run_alignment(queued_workspace_id, alignment_run_id)
+
+    queued_variant_runs: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        variant_calling_service,
+        "enqueue_variant_calling_run",
+        lambda workspace_id, run_id: queued_variant_runs.append((workspace_id, run_id)),
+    )
+
+    run_response = await client.post(
+        f"/api/workspaces/{workspace['id']}/variant-calling/run"
+    )
+    assert run_response.status_code == 200, run_response.text
+    variant_run_id = run_response.json()["latest_run"]["id"]
+
+    # Fake a partially-completed run on disk: a few shards done.
+    run_dir = get_variant_calling_run_root(workspace["id"], variant_run_id)
+    shard_dir = run_dir / "shards"
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    for contig in ("chr1", "chr2", "chr3"):
+        (shard_dir / f"{contig}.vcf.gz").write_bytes(b"x")
+        (shard_dir / f"{contig}.done").touch()
+
+    # Flip to RUNNING so pause is a valid transition.
+    with session_scope() as session:
+        record = session.scalar(
+            select(PipelineRunRecord).where(PipelineRunRecord.id == variant_run_id)
+        )
+        record.status = "running"
+
+    pause_response = await client.post(
+        f"/api/workspaces/{workspace['id']}/variant-calling/runs/{variant_run_id}/pause"
+    )
+    assert pause_response.status_code == 200, pause_response.text
+    payload = pause_response.json()
+    assert payload["status"] == "paused"
+    assert payload["latest_run"]["status"] == "paused"
+    assert payload["latest_run"]["completed_shards"] == 3
+    assert payload["latest_run"]["total_shards"] == 3
+    assert run_dir.exists()
+    assert (shard_dir / "chr1.done").exists()
+
+    # Resume flips back to pending and re-enqueues the worker.
+    queued_variant_runs.clear()
+    resume_response = await client.post(
+        f"/api/workspaces/{workspace['id']}/variant-calling/runs/{variant_run_id}/resume"
+    )
+    assert resume_response.status_code == 200, resume_response.text
+    resume_payload = resume_response.json()
+    assert resume_payload["latest_run"]["status"] == "pending"
+    assert queued_variant_runs == [(workspace["id"], variant_run_id)]
+    # Shards survive resume.
+    assert (shard_dir / "chr2.done").exists()
+
+
+@pytest.mark.anyio
+async def test_variant_calling_pause_kills_orphaned_subprocesses_via_pid_file(
+    client: httpx.AsyncClient,
+    queued_batches: list[tuple[str, str]],
+    queued_alignment_runs: list[tuple[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """Orphans reparented to PID 1 (from a dead launching worker) must still be
+    killed when pause is clicked — the in-memory Popen list is gone, so the
+    fallback scans the pid_dir and validates via /proc/{pid}/cmdline."""
+    import subprocess
+    import time
+
+    from app.services import variant_calling as variant_calling_service
+
+    workspace = await prepare_alignment_ready_workspace(client, queued_batches, tmp_path)
+    install_fake_alignment(monkeypatch, tmp_path)
+
+    await client.post(f"/api/workspaces/{workspace['id']}/alignment/run")
+    queued_workspace_id, alignment_run_id = queued_alignment_runs.pop(0)
+    alignment_service.run_alignment(queued_workspace_id, alignment_run_id)
+
+    monkeypatch.setattr(
+        variant_calling_service, "enqueue_variant_calling_run", lambda *a, **k: None
+    )
+    run_response = await client.post(
+        f"/api/workspaces/{workspace['id']}/variant-calling/run"
+    )
+    variant_run_id = run_response.json()["latest_run"]["id"]
+
+    pid_dir = variant_calling_service._derive_pid_dir_on_disk(
+        workspace["id"], variant_run_id
+    )
+    pid_dir.mkdir(parents=True, exist_ok=True)
+
+    # Simulate an orphaned Mutect2 child: its cmdline must contain the run_id
+    # so the fallback's safety check accepts it. ``start_new_session=True``
+    # puts the dummy in its own process group — otherwise the killpg in the
+    # fallback would also kill pytest.
+    proc = subprocess.Popen(
+        ["sh", "-c", f"sleep 30 # {variant_run_id}"],
+        start_new_session=True,
+    )
+    try:
+        (pid_dir / str(proc.pid)).touch()
+
+        with session_scope() as session:
+            record = session.scalar(
+                select(PipelineRunRecord).where(PipelineRunRecord.id == variant_run_id)
+            )
+            record.status = "running"
+
+        pause_response = await client.post(
+            f"/api/workspaces/{workspace['id']}/variant-calling/runs/{variant_run_id}/pause"
+        )
+        assert pause_response.status_code == 200, pause_response.text
+        assert pause_response.json()["latest_run"]["status"] == "paused"
+
+        # Process should be dead, marker file cleaned up.
+        for _ in range(40):
+            if proc.poll() is not None:
+                break
+            time.sleep(0.1)
+        assert proc.poll() is not None, "orphaned subprocess was not killed by pause"
+        assert not (pid_dir / str(proc.pid)).exists()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+@pytest.mark.anyio
+async def test_variant_calling_cancel_wipes_shards(
+    client: httpx.AsyncClient,
+    queued_batches: list[tuple[str, str]],
+    queued_alignment_runs: list[tuple[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from app.runtime import get_variant_calling_run_root
+    from app.services import variant_calling as variant_calling_service
+
+    workspace = await prepare_alignment_ready_workspace(client, queued_batches, tmp_path)
+    install_fake_alignment(monkeypatch, tmp_path)
+
+    await client.post(f"/api/workspaces/{workspace['id']}/alignment/run")
+    queued_workspace_id, alignment_run_id = queued_alignment_runs.pop(0)
+    alignment_service.run_alignment(queued_workspace_id, alignment_run_id)
+
+    monkeypatch.setattr(
+        variant_calling_service, "enqueue_variant_calling_run", lambda *a, **k: None
+    )
+    run_response = await client.post(
+        f"/api/workspaces/{workspace['id']}/variant-calling/run"
+    )
+    variant_run_id = run_response.json()["latest_run"]["id"]
+
+    run_dir = get_variant_calling_run_root(workspace["id"], variant_run_id)
+    (run_dir / "shards").mkdir(parents=True, exist_ok=True)
+    (run_dir / "shards" / "chr1.done").touch()
+
+    with session_scope() as session:
+        record = session.scalar(
+            select(PipelineRunRecord).where(PipelineRunRecord.id == variant_run_id)
+        )
+        record.status = "running"
+
+    cancel_response = await client.post(
+        f"/api/workspaces/{workspace['id']}/variant-calling/runs/{variant_run_id}/cancel"
+    )
+    assert cancel_response.status_code == 200, cancel_response.text
+    payload = cancel_response.json()
+    # A cancelled run drops the stage back to scaffolded (ready for a fresh run).
+    assert payload["status"] == "scaffolded"
+    assert payload["latest_run"]["status"] == "cancelled"
+    assert not run_dir.exists()

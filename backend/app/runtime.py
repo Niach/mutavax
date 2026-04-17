@@ -116,6 +116,18 @@ def get_reference_bundle_root() -> Path:
     return root.resolve()
 
 
+def get_inbox_root() -> Path:
+    """Return the inbox directory users drop FASTQ/BAM/CRAM files into.
+
+    Bind-mounted at ``/inbox`` inside the container; configurable via
+    ``CANCERSTUDIO_INBOX_DIR`` for dev setups that run the backend natively.
+    """
+    configured = os.getenv("CANCERSTUDIO_INBOX_DIR")
+    root = Path(configured).expanduser() if configured else get_app_data_root() / "inbox"
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
+
+
 def get_local_sqlite_path() -> Path:
     configured = os.getenv("LOCAL_SQLITE_PATH")
     if configured:
@@ -135,6 +147,40 @@ def is_path_within_app_data(path: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+_APP_DATA_SUBDIRS = ("workspaces", "references", "inbox", "batches")
+
+
+def resolve_app_data_path(stored: str | Path) -> Path:
+    """Map a stored absolute path back into the current app-data tree.
+
+    Catches the bind-mount/native-install path mismatch: a SQLite row created
+    when the backend ran natively (paths like
+    ``/media/.../cancerstudio/workspaces/.../tumor.bam``) is now read inside
+    the container, where the same data lives under ``/app-data/workspaces/...``.
+
+    If the stored path already exists on disk, it is returned untouched.
+    Otherwise we look for the first known subdirectory prefix (``workspaces``,
+    ``references``, ``inbox``, ``batches``) in the path's segments and rebase
+    everything from that segment onward under the current app-data root. If
+    no known prefix appears we return the original path so the caller's
+    "missing file" error path still fires.
+    """
+    candidate = Path(stored)
+    if candidate.exists():
+        return candidate
+    parts = candidate.parts
+    for index, segment in enumerate(parts):
+        if segment in _APP_DATA_SUBDIRS:
+            rebased = get_app_data_root().joinpath(*parts[index:])
+            if rebased.exists():
+                return rebased
+            # Return the rebased path even if missing — its absence is more
+            # actionable than the original "host path not visible inside
+            # container" error.
+            return rebased
+    return candidate
 
 
 def atomic_write_json(path: Path, data: Any) -> None:

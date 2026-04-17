@@ -140,16 +140,6 @@ export function formatLaneLabel(sampleLane: SampleLane) {
   return sampleLane === "tumor" ? "Tumor" : "Normal";
 }
 
-export function formatAssayType(assayType?: "wgs" | "wes" | null) {
-  if (assayType === "wes") {
-    return "WES";
-  }
-  if (assayType === "wgs") {
-    return "WGS";
-  }
-  return "Unset";
-}
-
 export function formatReferencePreset(referencePreset?: ReferencePreset | null) {
   if (referencePreset === "canfam4") {
     return "Dog reference";

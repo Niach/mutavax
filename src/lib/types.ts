@@ -11,7 +11,6 @@ export type PipelineStageId =
   | "ai-review";
 
 export type WorkspaceSpecies = "human" | "dog" | "cat";
-export type AssayType = "wgs" | "wes";
 export type ReferencePreset = "grch38" | "canfam4" | "felcat9";
 export type SampleLane = "tumor" | "normal";
 export type WorkspaceFileFormat = "fastq" | "bam" | "cram";
@@ -125,11 +124,9 @@ export interface IngestionSummary {
 export interface CreateWorkspaceInput {
   displayName: string;
   species: WorkspaceSpecies;
-  assayType?: AssayType | null;
 }
 
 export interface AnalysisProfile {
-  assayType?: AssayType | null;
   referencePreset?: ReferencePreset | null;
   referenceOverride?: string | null;
 }
@@ -216,7 +213,6 @@ export interface AlignmentRun {
   id: string;
   status: AlignmentRunStatus;
   progress: number;
-  assayType?: AssayType | null;
   referencePreset?: ReferencePreset | null;
   referenceOverride?: string | null;
   referenceLabel?: string | null;
@@ -283,13 +279,20 @@ export type AlignmentSettingsPatch = Partial<AlignmentSettingsDefaults> & {
   reset?: boolean;
 };
 
-export type VariantCallingRunStatus = "pending" | "running" | "completed" | "failed";
+export type VariantCallingRunStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "paused";
 export type VariantCallingStageStatus =
   | "blocked"
   | "scaffolded"
   | "running"
   | "completed"
-  | "failed";
+  | "failed"
+  | "paused";
 export type VariantCallingRuntimePhase =
   | "preparing_reference"
   | "calling"
@@ -368,6 +371,8 @@ export interface VariantCallingArtifact {
   localPath?: string | null;
 }
 
+export type VariantCallingAccelerationMode = "gpu_parabricks" | "cpu_gatk";
+
 export interface VariantCallingRun {
   id: string;
   status: VariantCallingRunStatus;
@@ -382,6 +387,9 @@ export interface VariantCallingRun {
   commandLog: string[];
   metrics?: VariantCallingMetrics | null;
   artifacts: VariantCallingArtifact[];
+  completedShards: number;
+  totalShards: number;
+  accelerationMode: VariantCallingAccelerationMode;
 }
 
 export interface VariantCallingStageSummary {

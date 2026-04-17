@@ -24,6 +24,7 @@ from app.runtime import (
     get_app_data_root,
     get_reference_bundle_root,
     load_runtime_setting,
+    resolve_app_data_path,
 )
 from app.services import alignment_manifest
 from app.models.records import (
@@ -40,7 +41,6 @@ from app.models.schemas import (
     AlignmentRunStatus,
     AlignmentStageStatus,
     AlignmentStageSummaryResponse,
-    AnalysisAssayType,
     ChunkProgressPhase,
     ChunkProgressStateResponse,
     PipelineStageId,
@@ -113,7 +113,6 @@ class AlignmentJobInputs:
     workspace_id: str
     workspace_display_name: str
     species: str
-    assay_type: AnalysisAssayType
     reference: ReferenceConfig
     lanes: dict[SampleLane, AlignmentLaneInput]
 
@@ -608,7 +607,6 @@ def serialize_alignment_run(
         id=record.id,
         status=status,
         progress=progress_fraction,
-        assay_type=AnalysisAssayType(record.assay_type) if record.assay_type else None,
         reference_preset=(
             ReferencePreset(record.reference_preset)
             if record.reference_preset
@@ -707,15 +705,13 @@ def profile_matches_run(
     analysis_profile: WorkspaceAnalysisProfileResponse,
     run: PipelineRunRecord,
 ) -> bool:
-    assay_value = analysis_profile.assay_type.value if analysis_profile.assay_type else None
     preset_value = (
         analysis_profile.reference_preset.value
         if analysis_profile.reference_preset
         else None
     )
     return (
-        run.assay_type == assay_value
-        and run.reference_preset == preset_value
+        run.reference_preset == preset_value
         and (run.reference_override or None) == (analysis_profile.reference_override or None)
     )
 
@@ -817,18 +813,6 @@ def build_alignment_stage_summary(
             workspace_id=workspace.id,
             status=AlignmentStageStatus.BLOCKED,
             blocking_reason="Complete tumor and normal ingestion first.",
-            analysis_profile=analysis_profile,
-            latest_run=latest_run_response,
-            qc_verdict=latest_run_response.qc_verdict if latest_run_response else None,
-            lane_metrics=top_level_metrics,
-            artifacts=artifacts,
-        )
-
-    if analysis_profile.assay_type is None:
-        return AlignmentStageSummaryResponse(
-            workspace_id=workspace.id,
-            status=AlignmentStageStatus.BLOCKED,
-            blocking_reason="Choose WGS or WES before running alignment.",
             analysis_profile=analysis_profile,
             latest_run=latest_run_response,
             qc_verdict=latest_run_response.qc_verdict if latest_run_response else None,
@@ -1040,7 +1024,6 @@ def create_alignment_run(
             status=AlignmentRunStatus.PENDING.value,
             progress=0,
             qc_verdict=None,
-            assay_type=analysis_profile.assay_type.value if analysis_profile.assay_type else None,
             reference_preset=analysis_profile.reference_preset.value if analysis_profile.reference_preset else None,
             reference_override=analysis_profile.reference_override,
             reference_label=reference.label,
@@ -2498,8 +2481,6 @@ def start_alignment_run(
         ingestion_summary = summarize_workspace_ingestion(workspace)
         if not ingestion_summary.ready_for_alignment:
             raise RuntimeError("Alignment inputs are no longer ready.")
-        if analysis_profile.assay_type is None:
-            raise RuntimeError("Analysis profile is incomplete.")
         if not profile_matches_run(analysis_profile, run):
             raise RuntimeError("Analysis profile changed before alignment started.")
 
@@ -2535,7 +2516,6 @@ def start_alignment_run(
             workspace_id=workspace.id,
             workspace_display_name=workspace.display_name,
             species=workspace.species,
-            assay_type=analysis_profile.assay_type,
             reference=reference,
             lanes=lane_inputs,
         )
@@ -2940,6 +2920,6 @@ def load_alignment_artifact_download(
         artifact = get_alignment_artifact_record(session, workspace_id, artifact_id)
         return AlignmentArtifactDownload(
             filename=artifact.filename,
-            local_path=Path(artifact.local_path or artifact.storage_key),
+            local_path=resolve_app_data_path(artifact.local_path or artifact.storage_key),
             content_type=artifact.content_type,
         )

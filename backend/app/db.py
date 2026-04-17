@@ -138,12 +138,6 @@ def _ensure_schema_updates() -> None:
     _ensure_column(
         inspector,
         "workspaces",
-        "assay_type",
-        "VARCHAR(16)",
-    )
-    _ensure_column(
-        inspector,
-        "workspaces",
         "reference_preset",
         "VARCHAR(32)",
     )

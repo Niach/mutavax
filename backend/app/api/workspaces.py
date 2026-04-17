@@ -28,7 +28,9 @@ from app.services.variant_calling import (
     create_variant_calling_run,
     load_variant_calling_artifact_download,
     load_variant_calling_stage_summary,
+    pause_variant_calling_run,
     rerun_variant_calling,
+    resume_variant_calling_run,
 )
 from app.services.tool_preflight import (
     ALIGNMENT_TOOLS,
@@ -287,6 +289,36 @@ async def cancel_variant_calling_stage(workspace_id: str, run_id: str):
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
         raise unexpected_workspace_error("Variant calling cancel", error) from error
+
+
+@router.post(
+    "/{workspace_id}/variant-calling/runs/{run_id}/pause",
+    response_model=VariantCallingStageSummaryResponse,
+)
+async def pause_variant_calling_stage(workspace_id: str, run_id: str):
+    try:
+        return pause_variant_calling_run(workspace_id, run_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Variant calling pause", error) from error
+
+
+@router.post(
+    "/{workspace_id}/variant-calling/runs/{run_id}/resume",
+    response_model=VariantCallingStageSummaryResponse,
+)
+async def resume_variant_calling_stage(workspace_id: str, run_id: str):
+    try:
+        return resume_variant_calling_run(workspace_id, run_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Variant calling resume", error) from error
 
 
 @router.get("/{workspace_id}/variant-calling/artifacts/{artifact_id}/download")

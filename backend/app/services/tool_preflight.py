@@ -12,8 +12,10 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import subprocess
 from dataclasses import dataclass
-from typing import Iterable
+from functools import lru_cache
+from typing import Iterable, Literal
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,45 @@ def verify_tools(tools: Iterable[ToolRequirement]) -> None:
     missing = [tool for tool in tools if not tool.is_available()]
     if missing:
         raise MissingToolError(missing)
+
+
+# --------------------------------------------------------------------------- #
+# GPU detection (drives variant calling Parabricks vs. CPU GATK dispatch)
+# --------------------------------------------------------------------------- #
+
+
+AccelerationMode = Literal["gpu_parabricks", "cpu_gatk"]
+
+
+@lru_cache(maxsize=1)
+def detect_gpu_available() -> bool:
+    """Return True iff `nvidia-smi` succeeds and reports at least one GPU.
+
+    Honors ``CANCERSTUDIO_VC_FORCE_CPU=1`` as a hard override for users or
+    CI that want to exercise the CPU path from inside a GPU-capable image.
+    Cached — GPU presence doesn't change within a process lifetime.
+    """
+    if os.getenv("CANCERSTUDIO_VC_FORCE_CPU") == "1":
+        return False
+    if shutil.which("nvidia-smi") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    return any(line.strip() for line in result.stdout.splitlines())
+
+
+def current_acceleration_mode() -> AccelerationMode:
+    """Resolve the acceleration mode for variant calling."""
+    return "gpu_parabricks" if detect_gpu_available() else "cpu_gatk"
 
 
 # Strobealign peaks at ~31 GB building the hg38 strobemer index (544M syncmer

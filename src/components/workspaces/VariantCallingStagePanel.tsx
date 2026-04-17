@@ -5,8 +5,8 @@ import {
   AlertTriangle,
   ChevronRight,
   FolderOpen,
-  LoaderCircle,
   LockKeyhole,
+  Pause,
   Play,
   RotateCw,
   Square,
@@ -40,11 +40,18 @@ interface VariantCallingStagePanelProps {
   initialSummary: VariantCallingStageSummary;
 }
 
-type BannerState = "blocked" | "ready" | "running" | "completed" | "failed";
+type BannerState =
+  | "blocked"
+  | "ready"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed";
 
 function bannerStateOf(summary: VariantCallingStageSummary): BannerState {
   if (summary.status === "blocked") return "blocked";
   if (summary.status === "running") return "running";
+  if (summary.status === "paused") return "paused";
   if (summary.status === "completed") return "completed";
   if (summary.status === "failed") return "failed";
   return "ready";
@@ -54,41 +61,10 @@ const PILL_TONES: Record<BannerState, { label: string; bg: string; dot: string }
   blocked: { label: "Locked", bg: "bg-stone-100 text-stone-500", dot: "bg-stone-400" },
   ready: { label: "Ready", bg: "bg-sky-50 text-sky-700", dot: "bg-sky-500" },
   running: { label: "Running", bg: "bg-amber-50 text-amber-700", dot: "bg-amber-500" },
+  paused: { label: "Paused", bg: "bg-indigo-50 text-indigo-700", dot: "bg-indigo-500" },
   completed: { label: "Complete", bg: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500" },
   failed: { label: "Failed", bg: "bg-rose-50 text-rose-700", dot: "bg-rose-500" },
 };
-
-function bannerMessage(
-  state: BannerState,
-  workspaceName: string,
-  blockingReason?: string | null
-) {
-  switch (state) {
-    case "blocked":
-      return blockingReason ?? "Finish alignment before searching for mutations.";
-    case "ready":
-      return `Alignment is ready for ${workspaceName}. You can start searching for mutations.`;
-    case "running":
-      return "Searching for mutations on your computer…";
-    case "completed":
-      return "The mutations are in. Have a look at the karyogram and the top finds below.";
-    case "failed":
-      return blockingReason ?? "The search failed. Check the details and try again.";
-  }
-}
-
-const PHASE_LABELS: Record<VariantCallingRuntimePhase | "unknown", string> = {
-  preparing_reference: "Preparing the reference genome",
-  calling: "Searching for mutations",
-  filtering: "Filtering out noise",
-  finalizing: "Wrapping up",
-  unknown: "Working",
-};
-
-function runtimePhaseLabel(phase?: VariantCallingRuntimePhase | null) {
-  if (!phase) return PHASE_LABELS.unknown;
-  return PHASE_LABELS[phase] ?? PHASE_LABELS.unknown;
-}
 
 function artifactKindLabel(kind: VariantCallingArtifact["artifactKind"]) {
   if (kind === "vcf") return "Somatic VCF";
@@ -123,7 +99,7 @@ export default function VariantCallingStagePanel({
   }, [initialSummary]);
 
   useEffect(() => {
-    if (summary.status !== "running") {
+    if (summary.status !== "running" && summary.status !== "paused") {
       return;
     }
     const timer = window.setInterval(() => {
@@ -202,6 +178,42 @@ export default function VariantCallingStagePanel({
     }
   }, [workspace.id, latestRun]);
 
+  const handlePause = useCallback(async () => {
+    if (!latestRun) return;
+    setActionError(null);
+    setIsSubmitting(true);
+    try {
+      const next = await api.pauseVariantCalling(workspace.id, latestRun.id);
+      setSummary(next);
+    } catch (error) {
+      if (error instanceof Error) {
+        setActionError(error.message);
+      } else {
+        setActionError("Unable to pause the run.");
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [workspace.id, latestRun]);
+
+  const handleResume = useCallback(async () => {
+    if (!latestRun) return;
+    setActionError(null);
+    setIsSubmitting(true);
+    try {
+      const next = await api.resumeVariantCalling(workspace.id, latestRun.id);
+      setSummary(next);
+    } catch (error) {
+      if (error instanceof Error) {
+        setActionError(error.message);
+      } else {
+        setActionError("Unable to resume the run.");
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [workspace.id, latestRun]);
+
   const handleOpenArtifact = useCallback(
     async (artifact: VariantCallingArtifact) => {
       const desktop = getDesktopBridge();
@@ -228,38 +240,59 @@ export default function VariantCallingStagePanel({
     return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
   }, [latestRun?.startedAt, latestRun?.completedAt]);
 
+  const showDescription =
+    bannerState !== "running" &&
+    bannerState !== "paused" &&
+    bannerState !== "completed";
+
   return (
     <div className="space-y-3" data-testid="variant-calling-stage-panel">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-1 pt-1 pb-2">
-        <p className="text-sm text-stone-600">
-          {bannerMessage(bannerState, workspace.displayName, summary.blockingReason)}
-        </p>
-        <span
-          data-testid="variant-calling-stage-status-strip"
-          data-state={summary.status}
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.2em]",
-            pill.bg
-          )}
-        >
-          <span className={cn("inline-block size-1.5 rounded-full", pill.dot)} />
-          {pill.label}
-        </span>
-      </div>
-
       <section className="rounded-2xl border border-stone-200 bg-white">
         <div className="space-y-5 px-5 py-4">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0 max-w-2xl">
-              <h3 className="font-display text-[22px] leading-tight font-light text-stone-900">
-                Find the cancer-specific mutations
-              </h3>
-              <p className="mt-1 text-[13px] leading-6 text-stone-500">
-                We compare the cancer sample to the healthy sample, set aside
-                anything that looks like a sequencing glitch or an inherited
-                genetic variant, and show you what is left — the changes that
-                are only in the cancer.
-              </p>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h3 className="font-display text-[22px] leading-tight font-light text-stone-900">
+                  Find the cancer-specific mutations
+                </h3>
+                <span
+                  data-testid="variant-calling-stage-status-strip"
+                  data-state={summary.status}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.2em]",
+                    pill.bg
+                  )}
+                >
+                  <span className={cn("inline-block size-1.5 rounded-full", pill.dot)} />
+                  {pill.label}
+                </span>
+                {latestRun?.accelerationMode === "gpu_parabricks" ? (
+                  <span
+                    data-testid="variant-calling-acceleration-mode"
+                    data-mode="gpu_parabricks"
+                    className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.2em] text-emerald-700"
+                  >
+                    <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
+                    GPU
+                  </span>
+                ) : latestRun ? (
+                  <span
+                    data-testid="variant-calling-acceleration-mode"
+                    data-mode="cpu_gatk"
+                    className="inline-flex items-center gap-1.5 rounded-full bg-stone-100 px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.2em] text-stone-600"
+                  >
+                    CPU
+                  </span>
+                ) : null}
+              </div>
+              {showDescription ? (
+                <p className="mt-2 text-[13px] leading-6 text-stone-500">
+                  We compare the cancer sample to the healthy sample, set aside
+                  anything that looks like a sequencing glitch or an inherited
+                  genetic variant, and show you what is left — the changes that
+                  are only in the cancer.
+                </p>
+              ) : null}
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -276,15 +309,50 @@ export default function VariantCallingStagePanel({
                 </button>
               ) : null}
               {bannerState === "running" && latestRun ? (
-                <button
-                  type="button"
-                  disabled={isSubmitting}
-                  onClick={handleCancel}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-rose-200 bg-white px-3 py-1.5 text-[12px] font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <Square className="size-3" />
-                  Stop
-                </button>
+                <>
+                  <button
+                    type="button"
+                    data-testid="variant-calling-pause-button"
+                    disabled={isSubmitting}
+                    onClick={handlePause}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-3 py-1.5 text-[12px] font-medium text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Pause className="size-3" />
+                    Pause & keep progress
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSubmitting}
+                    onClick={handleCancel}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-rose-200 bg-white px-3 py-1.5 text-[12px] font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Square className="size-3" />
+                    Cancel & discard
+                  </button>
+                </>
+              ) : null}
+              {bannerState === "paused" && latestRun ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={isSubmitting}
+                    onClick={handleCancel}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-rose-200 bg-white px-3 py-1.5 text-[12px] font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Square className="size-3" />
+                    Discard & restart
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="variant-calling-resume-button"
+                    disabled={isSubmitting}
+                    onClick={handleResume}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-emerald-600 px-3 py-1.5 text-[12px] font-medium text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Play className="size-3" />
+                    Resume search
+                  </button>
+                </>
               ) : null}
               {(bannerState === "completed" || bannerState === "failed") ? (
                 <button
@@ -332,17 +400,18 @@ export default function VariantCallingStagePanel({
           ) : null}
 
           {bannerState === "running" && latestRun ? (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-3 text-[13px] text-stone-700">
-                <div className="flex items-center gap-2">
-                  <LoaderCircle className="size-3.5 animate-spin text-emerald-600" />
-                  {runtimePhaseLabel(latestRun.runtimePhase)}
-                </div>
-                <div className="flex items-center gap-3 font-mono text-[11px] text-stone-500">
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between gap-3 font-mono text-[10px] uppercase tracking-[0.2em] text-stone-500">
+                <span>
+                  {latestRun.totalShards > 0
+                    ? `${latestRun.completedShards} / ${latestRun.totalShards} chromosomes done`
+                    : phaseRunningLabel(latestRun.runtimePhase)}
+                </span>
+                <span className="flex items-center gap-2">
                   <span>{elapsedLabel}</span>
                   <span className="text-stone-300">·</span>
                   <span>{Math.round(latestRun.progress * 100)}%</span>
-                </div>
+                </span>
               </div>
               <div className="h-1 overflow-hidden rounded-full bg-stone-200">
                 <div
@@ -353,6 +422,42 @@ export default function VariantCallingStagePanel({
                 />
               </div>
               <PhaseTimeline currentPhase={latestRun.runtimePhase} />
+            </div>
+          ) : null}
+
+          {bannerState === "paused" && latestRun ? (
+            <div className="space-y-3 rounded-xl border border-indigo-200 bg-indigo-50/60 px-4 py-3 text-[13px] text-indigo-900">
+              <div className="flex items-start gap-3">
+                <Pause className="mt-0.5 size-4 shrink-0 text-indigo-700" />
+                <div className="flex-1">
+                  <div className="font-medium">
+                    Paused
+                    {latestRun.totalShards > 0
+                      ? ` at ${latestRun.completedShards} / ${latestRun.totalShards} chromosomes`
+                      : ""}
+                  </div>
+                  <p className="mt-1 leading-6 text-indigo-900/80">
+                    Work done so far is saved on disk. Resume picks up from the
+                    next chromosome — discard wipes the progress and starts
+                    fresh.
+                  </p>
+                </div>
+              </div>
+              {latestRun.totalShards > 0 ? (
+                <div className="h-1 overflow-hidden rounded-full bg-indigo-100">
+                  <div
+                    className="h-full rounded-full bg-indigo-500"
+                    style={{
+                      width: `${Math.max(
+                        3,
+                        Math.round(
+                          (latestRun.completedShards / latestRun.totalShards) * 100
+                        )
+                      )}%`,
+                    }}
+                  />
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -522,6 +627,21 @@ function DetailCell({ label, value }: { label: string; value: string }) {
       <div className="mt-0.5 text-[13px] text-stone-900">{value}</div>
     </div>
   );
+}
+
+function phaseRunningLabel(phase: VariantCallingRuntimePhase | null | undefined): string {
+  switch (phase) {
+    case "preparing_reference":
+      return "Preparing reference";
+    case "calling":
+      return "Searching the genome";
+    case "filtering":
+      return "Filtering variants";
+    case "finalizing":
+      return "Wrapping up";
+    default:
+      return "Preparing reference";
+  }
 }
 
 function PhaseTimeline({ currentPhase }: { currentPhase?: VariantCallingRuntimePhase | null }) {

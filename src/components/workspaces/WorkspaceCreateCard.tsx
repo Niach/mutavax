@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { Cat, Dog, LoaderCircle, Plus, UserRound } from "lucide-react";
 
 import { api } from "@/lib/api";
-import type { AssayType } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -22,19 +21,6 @@ const speciesOptions = [
   { value: "human" as const, label: "Human", icon: UserRound },
   { value: "dog" as const, label: "Dog", icon: Dog },
   { value: "cat" as const, label: "Cat", icon: Cat },
-];
-
-const assayOptions: Array<{ value: AssayType; label: string; hint: string }> = [
-  {
-    value: "wgs",
-    label: "Whole genome",
-    hint: "The whole DNA was read. Most common — pick this unless the lab said otherwise.",
-  },
-  {
-    value: "wes",
-    label: "Exome only",
-    hint: "Only the protein-coding genes were read (a targeted panel).",
-  },
 ];
 
 interface WorkspaceCreateCardProps {
@@ -54,7 +40,6 @@ export default function WorkspaceCreateCard({
   const [error, setError] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("");
   const [species, setSpecies] = useState<"human" | "dog" | "cat">("human");
-  const [assayType, setAssayType] = useState<AssayType>("wgs");
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -65,7 +50,6 @@ export default function WorkspaceCreateCard({
       const workspace = await api.createWorkspace({
         displayName: displayName.trim(),
         species,
-        assayType,
       });
 
       onCreated?.();
@@ -138,45 +122,6 @@ export default function WorkspaceCreateCard({
             className={fieldClassName}
             placeholder="e.g. Rosie baseline"
           />
-
-          <div
-            className="space-y-2"
-            role="group"
-            aria-label="Sequencing method"
-          >
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="text-[12px] font-medium text-slate-700">
-                Sequencing method
-              </span>
-              <span className="text-[11px] text-slate-500">
-                Check the lab report if you are unsure
-              </span>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {assayOptions.map((option) => {
-                const isSelected = option.value === assayType;
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    onClick={() => setAssayType(option.value)}
-                    data-testid={`workspace-assay-${option.value}`}
-                    className={cn(
-                      "rounded-2xl border px-3 py-2.5 text-left transition",
-                      isSelected
-                        ? "border-emerald-600 bg-emerald-50 text-emerald-950 shadow-[inset_0_0_0_1px_rgba(5,150,105,0.14)]"
-                        : "border-black/8 bg-white/70 text-slate-700 hover:border-black/15 hover:bg-white"
-                    )}
-                  >
-                    <div className="text-[13px] font-medium">{option.label}</div>
-                    <p className="mt-0.5 text-[11px] leading-5 text-slate-500">
-                      {option.hint}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
 
           {error && (
             <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">

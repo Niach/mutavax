@@ -23,11 +23,6 @@ class WorkspaceSpecies(str, Enum):
     CAT = "cat"
 
 
-class AnalysisAssayType(str, Enum):
-    WGS = "wgs"
-    WES = "wes"
-
-
 class ReferencePreset(str, Enum):
     GRCH38 = "grch38"
     CANFAM4 = "canfam4"
@@ -126,7 +121,6 @@ class AlignmentArtifactKind(str, Enum):
 
 
 class WorkspaceAnalysisProfileResponse(BaseModel):
-    assay_type: Optional[AnalysisAssayType] = None
     reference_preset: Optional[ReferencePreset] = None
     reference_override: Optional[str] = None
 
@@ -181,7 +175,6 @@ class IngestionSummaryResponse(BaseModel):
 class WorkspaceCreateRequest(BaseModel):
     display_name: str
     species: WorkspaceSpecies = WorkspaceSpecies.HUMAN
-    assay_type: Optional[AnalysisAssayType] = None
 
 
 class WorkspaceResponse(BaseModel):
@@ -203,7 +196,6 @@ class ActiveStageUpdateRequest(BaseModel):
 
 
 class WorkspaceAnalysisProfileUpdateRequest(BaseModel):
-    assay_type: AnalysisAssayType
     reference_preset: Optional[ReferencePreset] = None
     reference_override: Optional[str] = None
 
@@ -275,7 +267,6 @@ class AlignmentRunResponse(BaseModel):
     id: str
     status: AlignmentRunStatus
     progress: float = 0.0
-    assay_type: Optional[AnalysisAssayType] = None
     reference_preset: Optional[ReferencePreset] = None
     reference_override: Optional[str] = None
     reference_label: Optional[str] = None
@@ -323,6 +314,8 @@ class VariantCallingRunStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+    PAUSED = "paused"
 
 
 class VariantCallingStageStatus(str, Enum):
@@ -331,6 +324,7 @@ class VariantCallingStageStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    PAUSED = "paused"
 
 
 class VariantCallingRuntimePhase(str, Enum):
@@ -422,6 +416,9 @@ class VariantCallingArtifactResponse(BaseModel):
     local_path: Optional[str] = None
 
 
+VariantCallingAccelerationMode = Literal["gpu_parabricks", "cpu_gatk"]
+
+
 class VariantCallingRunResponse(BaseModel):
     id: str
     status: VariantCallingRunStatus
@@ -436,6 +433,9 @@ class VariantCallingRunResponse(BaseModel):
     command_log: List[str] = Field(default_factory=list)
     metrics: Optional[VariantCallingMetricsResponse] = None
     artifacts: List[VariantCallingArtifactResponse] = Field(default_factory=list)
+    completed_shards: int = 0
+    total_shards: int = 0
+    acceleration_mode: VariantCallingAccelerationMode = "cpu_gatk"
 
 
 class VariantCallingStageSummaryResponse(BaseModel):

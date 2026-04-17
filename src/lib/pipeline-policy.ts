@@ -99,6 +99,7 @@ export function getPipelinePolicy(
     if (stage.id === "variant-calling") {
       const isBlocked = variantCallingSummary.status === "blocked";
       const isRunning = variantCallingSummary.status === "running";
+      const isPaused = variantCallingSummary.status === "paused";
       const isCompleted = variantCallingSummary.status === "completed";
       const isFailed = variantCallingSummary.status === "failed";
 
@@ -114,11 +115,13 @@ export function getPipelinePolicy(
             : "Complete ingestion first."
           : isRunning
             ? "Mutect2 is running on your local machine."
-            : isFailed
-              ? "Review the error, then rerun variant calling."
-              : isCompleted
-                ? "The mutations are in. Annotation is the next step on the roadmap."
-                : "Find the mutations that are only in the cancer.",
+            : isPaused
+              ? "The search is paused. Resume when you’re ready."
+              : isFailed
+                ? "Review the error, then rerun variant calling."
+                : isCompleted
+                  ? "The mutations are in. Annotation is the next step on the roadmap."
+                  : "Find the mutations that are only in the cancer.",
       };
       continue;
     }

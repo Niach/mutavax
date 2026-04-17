@@ -1,19 +1,12 @@
-export interface DesktopSelectedFile {
-  path: string;
-  name: string;
-  sizeBytes: number;
-  modifiedAtMs: number;
-}
-
 export interface DesktopNotifyPayload {
   title: string;
   body: string;
 }
 
 export interface DesktopBridge {
-  pickSequencingFiles: () => Promise<DesktopSelectedFile[]>;
   openPath: (targetPath: string) => Promise<void>;
   getAppDataPath: () => Promise<string>;
+  getDataRoot: () => Promise<string>;
   notify?: (payload: DesktopNotifyPayload) => Promise<void>;
 }
 
