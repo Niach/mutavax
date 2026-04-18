@@ -171,6 +171,12 @@ def _ensure_schema_updates() -> None:
         "runtime_phase",
         "VARCHAR(64)",
     )
+    _ensure_column(
+        inspector,
+        "workspaces",
+        "neoantigen_config",
+        "TEXT",
+    )
     _ensure_workspace_file_storage_key_not_unique()
 
 

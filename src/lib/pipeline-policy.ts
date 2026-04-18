@@ -1,6 +1,7 @@
 import type {
   AlignmentStageSummary,
   AnnotationStageSummary,
+  NeoantigenStageSummary,
   PipelineStage,
   PipelineStageId,
   VariantCallingStageSummary,
@@ -37,7 +38,8 @@ export function getPipelinePolicy(
   workspace: Workspace,
   alignmentSummary: AlignmentStageSummary,
   variantCallingSummary: VariantCallingStageSummary,
-  annotationSummary?: AnnotationStageSummary | null
+  annotationSummary?: AnnotationStageSummary | null,
+  neoantigenSummary?: NeoantigenStageSummary | null
 ): PipelinePolicyMap {
   const latestActionableStage =
     workspace.ingestion.readyForAlignment && alignmentSummary.status !== "blocked"
@@ -156,6 +158,39 @@ export function getPipelinePolicy(
                 : isCompleted
                   ? "The annotations are ready to explore."
                   : "Read what the mutations mean.",
+      };
+      continue;
+    }
+
+    if (stage.id === "neoantigen-prediction") {
+      const annotationReady = annotationSummary?.readyForNeoantigen ?? false;
+      const status =
+        neoantigenSummary?.status ?? (annotationReady ? "scaffolded" : "blocked");
+      const isBlocked = !annotationReady;
+      const isRunning = status === "running";
+      const isPaused = status === "paused";
+      const isCompleted = status === "completed";
+      const isFailed = status === "failed";
+
+      policies[stage.id] = {
+        stage,
+        visible: true,
+        enterable: true,
+        actionable: !isBlocked,
+        blockedReason: isBlocked
+          ? "Finish annotation before we can predict neoantigens."
+          : neoantigenSummary?.blockingReason ?? null,
+        nextStep: isBlocked
+          ? "Finish annotation first."
+          : isRunning
+            ? "Predicting which mutant fragments the patient's immune system can see."
+            : isPaused
+              ? "Neoantigen prediction is paused. Resume when you're ready."
+              : isFailed
+                ? "Review the error, then run neoantigen prediction again."
+                : isCompleted
+                  ? "The candidate peptides are ready to explore."
+                  : "Predict which mutant fragments the immune system can see.",
       };
       continue;
     }

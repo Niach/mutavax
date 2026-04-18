@@ -115,6 +115,12 @@ def get_annotation_run_root(workspace_id: str, run_id: str) -> Path:
     return root
 
 
+def get_neoantigen_run_root(workspace_id: str, run_id: str) -> Path:
+    root = get_workspace_root(workspace_id) / "neoantigen-prediction" / run_id
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def get_vep_cache_root() -> Path:
     """Root for VEP offline caches, shared across workspaces.
 

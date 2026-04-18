@@ -16,6 +16,7 @@ class WorkspaceRecord(Base):
     reference_preset: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     reference_override: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     active_stage: Mapped[str] = mapped_column(String(64), nullable=False)
+    neoantigen_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

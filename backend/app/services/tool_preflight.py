@@ -128,6 +128,48 @@ ANNOTATION_TOOLS: tuple[ToolRequirement, ...] = (
 )
 
 
+PVACSEQ_REQUIREMENT = ToolRequirement(
+    name="pvacseq",
+    env_var="PVACSEQ_BINARY",
+    default_binary="pvacseq",
+    install_hint=(
+        "Install pVACtools: python -m pip install pvactools. The cancerstudio "
+        "backend image installs it automatically — if you see this message you "
+        "are running the backend natively outside the container."
+    ),
+)
+
+
+NETMHCPAN_REQUIREMENT = ToolRequirement(
+    name="NetMHCpan 4.1",
+    env_var="CANCERSTUDIO_NETMHCPAN_BIN",
+    default_binary="netMHCpan",
+    install_hint=(
+        "NetMHCpan 4.1 requires a free academic license from DTU (https://services.healthtech.dtu.dk/). "
+        "Download the linux tarball, extract it under ${CANCERSTUDIO_DATA_ROOT}/netmhc/netMHCpan-4.1/, "
+        "and edit its top-level wrapper script so the binary is on PATH."
+    ),
+)
+
+
+NETMHCIIPAN_REQUIREMENT = ToolRequirement(
+    name="NetMHCIIpan 4.3",
+    env_var="CANCERSTUDIO_NETMHCIIPAN_BIN",
+    default_binary="netMHCIIpan",
+    install_hint=(
+        "NetMHCIIpan 4.3 requires a free academic license from DTU. Extract under "
+        "${CANCERSTUDIO_DATA_ROOT}/netmhc/netMHCIIpan-4.3/ (mounted read-only into the container)."
+    ),
+)
+
+
+NEOANTIGEN_TOOLS: tuple[ToolRequirement, ...] = (
+    PVACSEQ_REQUIREMENT,
+    NETMHCPAN_REQUIREMENT,
+    NETMHCIIPAN_REQUIREMENT,
+)
+
+
 def ingestion_tools_for_paths(paths: Iterable[str]) -> tuple[ToolRequirement, ...]:
     """Return only the tools the actual ingestion path will exercise.
 

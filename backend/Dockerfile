@@ -103,7 +103,14 @@ WORKDIR /app
 
 COPY backend/requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip \
-    && python -m pip install -r /app/requirements.txt
+    && python -m pip install -r /app/requirements.txt \
+    && python -m pip install "pvactools==5.4.0"
+
+# Mount point for externally-licensed MHC binding predictors (NetMHCpan 4.1 +
+# NetMHCIIpan 4.3). We cannot redistribute these, so the user drops them into
+# ${CANCERSTUDIO_DATA_ROOT}/netmhc on the host; docker-compose bind-mounts them
+# here read-only. pVACseq invokes the binaries via the env vars below.
+RUN mkdir -p /opt/netmhc
 
 COPY backend/app /app/app
 COPY backend/tests /app/tests
@@ -114,6 +121,9 @@ ENV CANCERSTUDIO_APP_DATA_DIR=/app-data \
     CANCERSTUDIO_VEP_CACHE_DIR=/vep-cache \
     CANCERSTUDIO_VEP_PLUGINS_DIR=/opt/vep-plugins \
     CANCERSTUDIO_VEP_RELEASE=111 \
+    CANCERSTUDIO_NETMHC_DIR=/opt/netmhc \
+    CANCERSTUDIO_NETMHCPAN_BIN=/opt/netmhc/netMHCpan-4.1/netMHCpan \
+    CANCERSTUDIO_NETMHCIIPAN_BIN=/opt/netmhc/netMHCIIpan-4.3/netMHCIIpan \
     PYTHONPATH=/app
 
 EXPOSE 8000

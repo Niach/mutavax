@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import AlignmentStagePanel from "@/components/workspaces/AlignmentStagePanel";
 import AnnotationStagePanel from "@/components/workspaces/AnnotationStagePanel";
 import IngestionStagePanel from "@/components/workspaces/IngestionStagePanel";
+import NeoantigenPredictionStagePanel from "@/components/workspaces/NeoantigenPredictionStagePanel";
 import VariantCallingStagePanel from "@/components/workspaces/VariantCallingStagePanel";
 import TweaksPanel from "@/components/dev/TweaksPanel";
 import HelixMini from "@/components/helix/HelixMini";
@@ -19,6 +20,7 @@ import {
 import type {
   AlignmentStageSummary,
   AnnotationStageSummary,
+  NeoantigenStageSummary,
   PipelineStageId,
   VariantCallingStageSummary,
   Workspace,
@@ -39,6 +41,7 @@ interface WorkspaceStageShellProps {
   initialAlignmentSummary: AlignmentStageSummary;
   initialVariantCallingSummary: VariantCallingStageSummary;
   initialAnnotationSummary: AnnotationStageSummary;
+  initialNeoantigenSummary: NeoantigenStageSummary;
   redirectedFromStageId: PipelineStageId | null;
 }
 
@@ -49,6 +52,7 @@ export default function WorkspaceStageShell({
   initialAlignmentSummary,
   initialVariantCallingSummary,
   initialAnnotationSummary,
+  initialNeoantigenSummary,
   redirectedFromStageId,
 }: WorkspaceStageShellProps) {
   const [workspace, setWorkspace] = useState(initialWorkspace);
@@ -64,13 +68,17 @@ export default function WorkspaceStageShell({
   const [annotationSummary, setAnnotationSummary] = useState(
     initialAnnotationSummary
   );
+  const [neoantigenSummary, setNeoantigenSummary] = useState(
+    initialNeoantigenSummary
+  );
   const { tweaks } = useTweaks();
 
   const stagePolicy = getPipelinePolicy(
     workspace,
     alignmentSummary,
     variantCallingSummary,
-    annotationSummary
+    annotationSummary,
+    neoantigenSummary
   );
   const currentStagePolicy = stagePolicy[currentStageId];
   const primaryStages = getVisiblePrimaryStages(stagePolicy);
@@ -111,6 +119,10 @@ export default function WorkspaceStageShell({
         void api
           .getAnnotationStageSummary(updatedWorkspace.id)
           .then(setAnnotationSummary)
+          .catch(() => {});
+        void api
+          .getNeoantigenStageSummary(updatedWorkspace.id)
+          .then(setNeoantigenSummary)
           .catch(() => {});
       })
       .catch(() => {});
@@ -306,6 +318,13 @@ export default function WorkspaceStageShell({
                 key={workspace.id}
                 workspace={workspace}
                 initialSummary={annotationSummary}
+              />
+            ) : currentStageId === "neoantigen-prediction" ? (
+              <NeoantigenPredictionStagePanel
+                key={workspace.id}
+                workspace={workspace}
+                initialSummary={neoantigenSummary}
+                onSummaryChange={setNeoantigenSummary}
               />
             ) : null}
           </div>

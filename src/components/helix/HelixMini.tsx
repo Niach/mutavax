@@ -12,11 +12,15 @@ export default function HelixMini({ size = 20, hue = 152 }: HelixMiniProps) {
       style={{ display: "inline-block", verticalAlign: "-5px" }}
     >
       {Array.from({ length: 12 }, (_, i) => {
-        const y = (i + 0.5) * (40 / 12);
+        // Round to 3 decimals so SSR and CSR serialize the same string for
+        // SVG attributes — raw floats produce trailing-digit hydration
+        // mismatches across Node and V8.
+        const round = (n: number) => Math.round(n * 1000) / 1000;
+        const y = round((i + 0.5) * (40 / 12));
         const t = i / 11;
         const phase = t * Math.PI * 2.2;
-        const x1 = 20 + Math.cos(phase) * 12;
-        const x2 = 20 - Math.cos(phase) * 12;
+        const x1 = round(20 + Math.cos(phase) * 12);
+        const x2 = round(20 - Math.cos(phase) * 12);
         return (
           <g key={i}>
             <line

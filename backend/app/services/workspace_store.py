@@ -1,4 +1,5 @@
 import gzip
+import json
 import os
 import re
 import shlex
@@ -949,6 +950,49 @@ def load_workspace(workspace_id: str) -> WorkspaceResponse:
         return serialize_workspace(get_workspace_record(session, workspace_id))
 
 
+_DEFAULT_ALLELES_CACHE: Optional[dict] = None
+
+
+def _load_default_alleles() -> dict:
+    global _DEFAULT_ALLELES_CACHE
+    if _DEFAULT_ALLELES_CACHE is None:
+        path = Path(__file__).resolve().parent.parent / "data" / "default_alleles.json"
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                _DEFAULT_ALLELES_CACHE = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            _DEFAULT_ALLELES_CACHE = {}
+    return _DEFAULT_ALLELES_CACHE
+
+
+def default_neoantigen_config(species: str) -> dict:
+    data = _load_default_alleles()
+    entry = data.get(species) or {}
+    alleles = entry.get("alleles", []) or []
+    return {
+        "species_label": entry.get("species_label"),
+        "alleles": [dict(item) for item in alleles],
+    }
+
+
+def load_workspace_neoantigen_config(workspace: WorkspaceRecord) -> dict:
+    raw = workspace.neoantigen_config
+    if raw:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
+        except (TypeError, ValueError):
+            pass
+    return default_neoantigen_config(workspace.species)
+
+
+def store_workspace_neoantigen_config(
+    workspace: WorkspaceRecord, config: dict
+) -> None:
+    workspace.neoantigen_config = json.dumps(config)
+
+
 def create_workspace(request: WorkspaceCreateRequest) -> WorkspaceResponse:
     display_name = request.display_name.strip()
     if not display_name:
@@ -963,6 +1007,7 @@ def create_workspace(request: WorkspaceCreateRequest) -> WorkspaceResponse:
             reference_preset=default_reference_preset_for_species(request.species.value).value,
             reference_override=None,
             active_stage=PipelineStageId.INGESTION.value,
+            neoantigen_config=json.dumps(default_neoantigen_config(request.species.value)),
             created_at=timestamp,
             updated_at=timestamp,
         )

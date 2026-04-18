@@ -16,18 +16,25 @@ export default async function WorkspaceIndexPage({
   const { workspaceId } = await params;
 
   try {
-    const [workspace, alignmentSummary, variantCallingSummary, annotationSummary] =
-      await Promise.all([
-        api.getWorkspace(workspaceId),
-        api.getAlignmentStageSummary(workspaceId),
-        api.getVariantCallingStageSummary(workspaceId),
-        api.getAnnotationStageSummary(workspaceId),
-      ]);
+    const [
+      workspace,
+      alignmentSummary,
+      variantCallingSummary,
+      annotationSummary,
+      neoantigenSummary,
+    ] = await Promise.all([
+      api.getWorkspace(workspaceId),
+      api.getAlignmentStageSummary(workspaceId),
+      api.getVariantCallingStageSummary(workspaceId),
+      api.getAnnotationStageSummary(workspaceId),
+      api.getNeoantigenStageSummary(workspaceId),
+    ]);
     const policy = getPipelinePolicy(
       workspace,
       alignmentSummary,
       variantCallingSummary,
-      annotationSummary
+      annotationSummary,
+      neoantigenSummary
     );
     const nextStage = getPreferredWorkspaceStageId(workspace.activeStage, policy);
 
