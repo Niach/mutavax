@@ -80,7 +80,17 @@ export default function AlignmentStagePanel({
   );
 
   useEffect(() => {
-    if (summary.status !== "running") return;
+    // Poll while the stage is actively changing state. "running" and "paused"
+    // are non-terminal and cover resume flows; "failed" is polled too because
+    // the user may retry from the panel, or (rarely) the run may be revived
+    // out-of-band — without this the page stays stuck on a stale failure.
+    if (
+      summary.status !== "running" &&
+      summary.status !== "paused" &&
+      summary.status !== "failed"
+    ) {
+      return;
+    }
     const timer = window.setInterval(() => {
       void api
         .getAlignmentStageSummary(workspace.id)
