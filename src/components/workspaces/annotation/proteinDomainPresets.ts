@@ -1,5 +1,11 @@
 import type { ProteinDomain } from "@/lib/types";
 
+// Fallback only. The backend now fetches real protein-feature coordinates
+// from Ensembl REST at annotation time and attaches them to
+// `GeneFocus.domains`; this preset is consulted by GeneLollipop only when
+// the backend's lookup returned nothing (offline / Ensembl 4xx / unknown
+// ENSP). Kept small on purpose — do not grow it to every cancer gene.
+//
 // Curated protein-domain bands for common cancer genes. Coordinates are in
 // amino-acid positions and follow canonical UniProt entries for the human
 // isoforms (canine/feline orthologs overlap closely for the conserved

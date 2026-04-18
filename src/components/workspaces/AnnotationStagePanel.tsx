@@ -30,6 +30,7 @@ import type {
   AnnotationStageSummary,
   CancerGeneHit,
   GeneFocus,
+  ProteinDomain,
   Workspace,
 } from "@/lib/types";
 
@@ -117,8 +118,19 @@ export default function AnnotationStagePanel({
     return [...impactfulHits, ...quietHits.slice(0, tailSlots)];
   }, [showAllHits, sortedHits, impactfulHits, quietHits]);
 
+  // Per-gene domain cache for the lollipop. The backend ships `domains` on
+  // `top_gene_focus` eagerly, but clicking a different cancer-gene card
+  // kicks off a lazy `/annotation/genes/{symbol}/domains` fetch so we
+  // don't burn ~100 Ensembl roundtrips per workspace. Cached results stick
+  // for the session.
+  const [domainsBySymbol, setDomainsBySymbol] = useState<
+    Record<string, ProteinDomain[] | null>
+  >({});
+  const [domainsLoading, setDomainsLoading] = useState<Set<string>>(new Set());
+
   const activeFocus: GeneFocus | null = useMemo(() => {
     if (!metrics?.topGeneFocus) return null;
+    let base: GeneFocus;
     if (focusedGene && focusedGene !== metrics.topGeneFocus.symbol) {
       const hit = metrics.cancerGeneHits.find((h) => h.symbol === focusedGene);
       if (hit) {
@@ -135,18 +147,63 @@ export default function AnnotationStagePanel({
             tumorVaf: v.tumorVaf ?? null,
           }));
         if (variants.length > 0) {
-          return {
+          base = {
             symbol: hit.symbol,
             role: hit.role,
             transcriptId: null,
             proteinLength: null,
             variants,
           };
+        } else {
+          base = metrics.topGeneFocus;
         }
+      } else {
+        base = metrics.topGeneFocus;
       }
+    } else {
+      base = metrics.topGeneFocus;
     }
-    return metrics.topGeneFocus;
-  }, [metrics, focusedGene]);
+
+    // Layer in any lazily-fetched domains. Backend-supplied domains on
+    // `top_gene_focus` win over the cache.
+    if (base.domains && base.domains.length > 0) return base;
+    const cached = domainsBySymbol[base.symbol];
+    if (cached && cached.length > 0) return { ...base, domains: cached };
+    return base;
+  }, [metrics, focusedGene, domainsBySymbol]);
+
+  // Fetch domains when the focused gene is one we haven't seen yet.
+  useEffect(() => {
+    if (!activeFocus) return;
+    const symbol = activeFocus.symbol;
+    if (activeFocus.domains && activeFocus.domains.length > 0) return;
+    if (symbol in domainsBySymbol) return; // cached (possibly as [])
+    if (domainsLoading.has(symbol)) return;
+    setDomainsLoading((prev) => {
+      const next = new Set(prev);
+      next.add(symbol);
+      return next;
+    });
+    void api
+      .getGeneProteinDomains(workspace.id, symbol)
+      .then((payload) => {
+        setDomainsBySymbol((prev) => ({
+          ...prev,
+          [symbol]: payload.domains,
+        }));
+      })
+      .catch(() => {
+        setDomainsBySymbol((prev) => ({ ...prev, [symbol]: [] }));
+      })
+      .finally(() => {
+        setDomainsLoading((prev) => {
+          if (!prev.has(symbol)) return prev;
+          const next = new Set(prev);
+          next.delete(symbol);
+          return next;
+        });
+      });
+  }, [activeFocus, domainsBySymbol, domainsLoading, workspace.id]);
 
   const runAction = useCallback(
     async (action: () => Promise<AnnotationStageSummary>, { resetFocus }: { resetFocus?: boolean } = {}) => {

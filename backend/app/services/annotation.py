@@ -52,12 +52,17 @@ from app.models.schemas import (
     AnnotationStageStatus,
     AnnotationStageSummaryResponse,
     CancerGeneHit,
+    GeneDomainsResponse,
     GeneFocus,
     GeneFocusVariant,
     PipelineStageId,
     WorkspaceSpecies,
 )
 from app.services.alignment import resolve_reference_config
+from app.services.protein_domains import (
+    fetch_domains_for_ensp,
+    parse_ensp_from_hgvsp,
+)
 from app.services.variant_calling import (
     VARIANT_CALLING_STAGE_ID,
     _open_vcf,
@@ -782,6 +787,76 @@ def load_annotation_stage_summary(workspace_id: str) -> AnnotationStageSummaryRe
         return build_annotation_stage_summary(
             workspace, latest_variant, latest_annotation
         )
+
+
+def load_gene_protein_domains(
+    workspace_id: str, gene_symbol: str
+) -> GeneDomainsResponse:
+    """Return the Ensembl protein-domain bands for ``gene_symbol`` on this
+    workspace's latest completed annotation run.
+
+    The UI only ships ``domains`` on ``top_gene_focus`` — this endpoint
+    backs the lazy per-gene fetch that fires when the user clicks a
+    different cancer-gene card. An empty list is a valid response; the
+    frontend falls back to the hand-curated preset in that case.
+    """
+    lookup_symbol = gene_symbol.strip().upper()
+    with session_scope() as session:
+        latest_annotation = get_latest_annotation_run(session, workspace_id)
+        metrics = (
+            _parse_metrics(latest_annotation.result_payload)
+            if latest_annotation is not None
+            else None
+        )
+
+    empty = GeneDomainsResponse(
+        symbol=lookup_symbol,
+        transcript_id=None,
+        protein_length=None,
+        domains=[],
+    )
+    if metrics is None:
+        return empty
+
+    # 1) top_gene_focus carries the full variant list + transcript id.
+    top_focus = metrics.top_gene_focus
+    if top_focus and top_focus.symbol.upper() == lookup_symbol:
+        ensp = next(
+            (
+                candidate
+                for candidate in (
+                    parse_ensp_from_hgvsp(variant.hgvsp)
+                    for variant in top_focus.variants
+                )
+                if candidate
+            ),
+            None,
+        )
+        if ensp:
+            return GeneDomainsResponse(
+                symbol=top_focus.symbol,
+                transcript_id=top_focus.transcript_id,
+                protein_length=top_focus.protein_length,
+                domains=top_focus.domains or fetch_domains_for_ensp(ensp),
+            )
+
+    # 2) Otherwise scan top_variants for the first hgvsp that matches this
+    #    symbol. top_variants is capped at TOP_VARIANTS_LIMIT per the metrics
+    #    builder, so the scan is cheap.
+    for variant in metrics.top_variants:
+        if (variant.gene_symbol or "").upper() != lookup_symbol:
+            continue
+        ensp = parse_ensp_from_hgvsp(variant.hgvsp)
+        if not ensp:
+            continue
+        return GeneDomainsResponse(
+            symbol=variant.gene_symbol or lookup_symbol,
+            transcript_id=variant.transcript_id,
+            protein_length=variant.protein_position,  # best approximation
+            domains=fetch_domains_for_ensp(ensp),
+        )
+
+    return empty
 
 
 # --------------------------------------------------------------------------- #
@@ -1638,6 +1713,26 @@ def compute_annotation_metrics(
             protein_length=focus_acc.protein_length,
             variants=focus_acc.variants,
         )
+        # Best-effort Ensembl protein-feature lookup for the focused gene so
+        # the lollipop paints real domain bands (kinase / DNA-binding / etc.)
+        # on its first render. The fetcher handles its own errors + caches to
+        # disk — a network hiccup leaves top_focus.domains as None and the
+        # frontend falls through to the preset / bare-track rendering.
+        focus_ensp = next(
+            (
+                ensp
+                for ensp in (
+                    parse_ensp_from_hgvsp(variant.hgvsp)
+                    for variant in focus_acc.variants
+                )
+                if ensp
+            ),
+            None,
+        )
+        if focus_ensp:
+            fetched = fetch_domains_for_ensp(focus_ensp)
+            if fetched:
+                top_focus.domains = fetched
 
     consequence_entries = [
         AnnotationConsequenceEntry(

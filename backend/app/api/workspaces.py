@@ -5,8 +5,11 @@ from app.models.schemas import (
     ActiveStageUpdateRequest,
     AlignmentStageSummaryResponse,
     AnnotationStageSummaryResponse,
+    GeneDomainsResponse,
     IngestionLanePreviewResponse,
     LocalFileRegistrationRequest,
+    NeoantigenAllelesUpdate,
+    NeoantigenStageSummaryResponse,
     SampleLane,
     VariantCallingStageSummaryResponse,
     WorkspaceAnalysisProfileUpdateRequest,
@@ -39,15 +42,28 @@ from app.services.annotation import (
     create_annotation_run,
     load_annotation_artifact_download,
     load_annotation_stage_summary,
+    load_gene_protein_domains,
     pause_annotation_run,
     rerun_annotation,
     resume_annotation_run,
+)
+from app.services.neoantigen import (
+    NeoantigenArtifactNotFoundError,
+    cancel_neoantigen_run,
+    create_neoantigen_run,
+    load_neoantigen_artifact_download,
+    load_neoantigen_stage_summary,
+    pause_neoantigen_run,
+    rerun_neoantigen,
+    resume_neoantigen_run,
+    update_neoantigen_alleles,
 )
 from app.services.tool_preflight import (
     ALIGNMENT_TOOLS,
     ANNOTATION_TOOLS,
     InsufficientMemoryError,
     MissingToolError,
+    NEOANTIGEN_TOOLS,
     VARIANT_CALLING_TOOLS,
     ingestion_tools_for_paths,
     verify_tools,
@@ -368,6 +384,28 @@ async def get_annotation_stage_summary(workspace_id: str):
         raise unexpected_workspace_error("Annotation summary load", error) from error
 
 
+@router.get(
+    "/{workspace_id}/annotation/genes/{gene_symbol}/domains",
+    response_model=GeneDomainsResponse,
+)
+async def get_gene_protein_domains(workspace_id: str, gene_symbol: str):
+    """Lazy per-gene domain fetch for the mutation-map lollipop.
+
+    Backs the frontend's "click a different cancer-gene card" flow —
+    only ``top_gene_focus`` carries domains in the initial annotation
+    payload so we don't burn Ensembl quota prefetching ~100 genes per
+    run.
+    """
+    try:
+        return load_gene_protein_domains(workspace_id, gene_symbol)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Gene domains lookup", error) from error
+
+
 @router.post(
     "/{workspace_id}/annotation/run",
     response_model=AnnotationStageSummaryResponse,
@@ -467,6 +505,141 @@ async def download_annotation_artifact(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except Exception as error:
         raise unexpected_workspace_error("Annotation artifact download", error) from error
+
+
+# ----------------------------------------------------------------------------- #
+# Stage 5 — Neoantigen prediction
+# ----------------------------------------------------------------------------- #
+
+
+@router.get(
+    "/{workspace_id}/neoantigen",
+    response_model=NeoantigenStageSummaryResponse,
+)
+async def get_neoantigen_stage_summary(workspace_id: str):
+    try:
+        return load_neoantigen_stage_summary(workspace_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Neoantigen summary load", error) from error
+
+
+@router.post(
+    "/{workspace_id}/neoantigen/run",
+    response_model=NeoantigenStageSummaryResponse,
+)
+async def run_neoantigen_stage(workspace_id: str):
+    try:
+        verify_tools(NEOANTIGEN_TOOLS)
+        return create_neoantigen_run(workspace_id)
+    except MissingToolError as error:
+        raise missing_tools_error(error) from error
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Neoantigen run", error) from error
+
+
+@router.post(
+    "/{workspace_id}/neoantigen/rerun",
+    response_model=NeoantigenStageSummaryResponse,
+)
+async def rerun_neoantigen_stage(workspace_id: str):
+    try:
+        verify_tools(NEOANTIGEN_TOOLS)
+        return rerun_neoantigen(workspace_id)
+    except MissingToolError as error:
+        raise missing_tools_error(error) from error
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Neoantigen rerun", error) from error
+
+
+@router.post(
+    "/{workspace_id}/neoantigen/runs/{run_id}/cancel",
+    response_model=NeoantigenStageSummaryResponse,
+)
+async def cancel_neoantigen_stage(workspace_id: str, run_id: str):
+    try:
+        return cancel_neoantigen_run(workspace_id, run_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Neoantigen cancel", error) from error
+
+
+@router.post(
+    "/{workspace_id}/neoantigen/runs/{run_id}/pause",
+    response_model=NeoantigenStageSummaryResponse,
+)
+async def pause_neoantigen_stage(workspace_id: str, run_id: str):
+    try:
+        return pause_neoantigen_run(workspace_id, run_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Neoantigen pause", error) from error
+
+
+@router.post(
+    "/{workspace_id}/neoantigen/runs/{run_id}/resume",
+    response_model=NeoantigenStageSummaryResponse,
+)
+async def resume_neoantigen_stage(workspace_id: str, run_id: str):
+    try:
+        return resume_neoantigen_run(workspace_id, run_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Neoantigen resume", error) from error
+
+
+@router.put(
+    "/{workspace_id}/neoantigen/alleles",
+    response_model=NeoantigenStageSummaryResponse,
+)
+async def update_neoantigen_alleles_route(
+    workspace_id: str, request: NeoantigenAllelesUpdate
+):
+    try:
+        return update_neoantigen_alleles(workspace_id, request.alleles)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Neoantigen alleles update", error) from error
+
+
+@router.get("/{workspace_id}/neoantigen/artifacts/{artifact_id}/download")
+async def download_neoantigen_artifact(workspace_id: str, artifact_id: str):
+    try:
+        artifact = load_neoantigen_artifact_download(workspace_id, artifact_id)
+        return FileResponse(
+            path=artifact.local_path,
+            media_type=artifact.content_type or "application/octet-stream",
+            filename=artifact.filename,
+        )
+    except NeoantigenArtifactNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Neoantigen artifact download", error) from error
 
 
 @router.get(

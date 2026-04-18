@@ -470,6 +470,13 @@ export interface GeneFocus {
   domains?: ProteinDomain[] | null;
 }
 
+export interface GeneDomainsResponse {
+  symbol: string;
+  transcriptId?: string | null;
+  proteinLength?: number | null;
+  domains: ProteinDomain[];
+}
+
 export interface AnnotatedVariantEntry {
   chromosome: string;
   position: number;
@@ -557,6 +564,152 @@ export interface Neoantigen {
   clonalVaf?: number;
 }
 
+// ----------------------------------------------------------------------------- //
+// Stage 5 — Neoantigen prediction
+// ----------------------------------------------------------------------------- //
+
+export type NeoantigenRunStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "paused";
+
+export type NeoantigenStageStatus =
+  | "blocked"
+  | "scaffolded"
+  | "running"
+  | "completed"
+  | "failed"
+  | "paused";
+
+export type NeoantigenRuntimePhase =
+  | "generating_fasta"
+  | "running_class_i"
+  | "running_class_ii"
+  | "parsing"
+  | "finalizing";
+
+export type NeoantigenArtifactKind =
+  | "all_epitopes_class_i"
+  | "filtered_class_i"
+  | "all_epitopes_class_ii"
+  | "filtered_class_ii"
+  | "pvacseq_log";
+
+export type MhcClass = "I" | "II";
+export type AlleleTypingKind = "typed" | "inferred";
+export type BindingTier = "strong" | "moderate" | "weak" | "none";
+
+export interface PatientAllele {
+  allele: string;
+  class: MhcClass;
+  typing: AlleleTypingKind;
+  frequency?: number | null;
+  source?: string | null;
+}
+
+export interface BindingBucket {
+  key: BindingTier;
+  label: string;
+  threshold: string;
+  plain: string;
+  count: number;
+}
+
+export interface HeatmapRow {
+  seq: string;
+  gene: string;
+  mut: string;
+  length: number;
+  class: MhcClass;
+  vaf: number;
+  ic50: number[];
+  mutPos?: number | null;
+}
+
+export interface HeatmapData {
+  alleles: string[];
+  peptides: HeatmapRow[];
+}
+
+export interface FunnelStep {
+  label: string;
+  count: number;
+  hint: string;
+}
+
+export interface TopCandidate {
+  seq: string;
+  gene: string;
+  mut: string;
+  length: number;
+  class: MhcClass;
+  allele: string;
+  ic50: number;
+  wtIc50?: number | null;
+  agretopicity?: number | null;
+  vaf?: number | null;
+  tpm?: number | null;
+  cancerGene: boolean;
+  strong: boolean;
+}
+
+export interface NeoantigenMetrics {
+  pvacseqVersion?: string | null;
+  netmhcpanVersion?: string | null;
+  netmhciipanVersion?: string | null;
+  speciesLabel?: string | null;
+  assembly?: string | null;
+  alleles: PatientAllele[];
+  annotatedVariants: number;
+  proteinChangingVariants: number;
+  peptidesGenerated: number;
+  visibleCandidates: number;
+  classICount: number;
+  classIICount: number;
+  buckets: BindingBucket[];
+  heatmap: HeatmapData;
+  funnel: FunnelStep[];
+  top: TopCandidate[];
+}
+
+export interface NeoantigenArtifact {
+  id: string;
+  artifactKind: NeoantigenArtifactKind;
+  filename: string;
+  sizeBytes: number;
+  downloadPath: string;
+  localPath?: string | null;
+}
+
+export interface NeoantigenRun {
+  id: string;
+  status: NeoantigenRunStatus;
+  progress: number;
+  runtimePhase?: NeoantigenRuntimePhase | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  blockingReason?: string | null;
+  error?: string | null;
+  commandLog: string[];
+  metrics?: NeoantigenMetrics | null;
+  artifacts: NeoantigenArtifact[];
+}
+
+export interface NeoantigenStageSummary {
+  workspaceId: string;
+  status: NeoantigenStageStatus;
+  blockingReason?: string | null;
+  readyForEpitopeSelection: boolean;
+  alleles: PatientAllele[];
+  latestRun?: NeoantigenRun | null;
+  artifacts: NeoantigenArtifact[];
+}
+
 export interface VaccineConstruct {
   id: string;
   name: string;
@@ -615,7 +768,7 @@ export const PIPELINE_STAGES: PipelineStage[] = [
     description: "Predict MHC binding for mutant peptides against DLA alleles",
     icon: "Target",
     tools: ["pVACseq", "NetMHCpan-4.1"],
-    implementationState: "planned",
+    implementationState: "live",
     group: "primary",
   },
   {

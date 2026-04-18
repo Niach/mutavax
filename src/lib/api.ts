@@ -22,6 +22,7 @@ import type {
   ChunkProgressState,
   CreateWorkspaceInput,
   FastqReadPreview,
+  GeneDomainsResponse,
   GeneFocus,
   GeneFocusVariant,
   IngestionLaneSummary,
@@ -46,6 +47,23 @@ import type {
   ReferencePreset,
   SampleLane,
   WorkspaceSpecies,
+  NeoantigenArtifact,
+  NeoantigenArtifactKind,
+  NeoantigenMetrics,
+  NeoantigenRun,
+  NeoantigenRunStatus,
+  NeoantigenRuntimePhase,
+  NeoantigenStageStatus,
+  NeoantigenStageSummary,
+  PatientAllele,
+  BindingBucket,
+  BindingTier,
+  HeatmapData,
+  HeatmapRow,
+  FunnelStep,
+  TopCandidate,
+  MhcClass,
+  AlleleTypingKind,
 } from "@/lib/types";
 
 const PUBLIC_API_BASE =
@@ -345,12 +363,27 @@ type GeneFocusVariantDto = {
   tumor_vaf?: number | null;
 };
 
+type ProteinDomainDto = {
+  start: number;
+  end: number;
+  label: string;
+  kind?: "catalytic" | "neutral" | null;
+};
+
 type GeneFocusDto = {
   symbol: string;
   role?: string | null;
   transcript_id?: string | null;
   protein_length?: number | null;
   variants: GeneFocusVariantDto[];
+  domains?: ProteinDomainDto[] | null;
+};
+
+type GeneDomainsDto = {
+  symbol: string;
+  transcript_id?: string | null;
+  protein_length?: number | null;
+  domains: ProteinDomainDto[];
 };
 
 type AnnotatedVariantEntryDto = {
@@ -780,6 +813,15 @@ function mapGeneFocus(dto: GeneFocusDto | null | undefined): GeneFocus | null {
     transcriptId: dto.transcript_id ?? null,
     proteinLength: dto.protein_length ?? null,
     variants: (dto.variants ?? []).map(mapGeneFocusVariant),
+    domains:
+      dto.domains && dto.domains.length > 0
+        ? dto.domains.map((d) => ({
+            start: d.start,
+            end: d.end,
+            label: d.label,
+            kind: d.kind ?? undefined,
+          }))
+        : null,
   };
 }
 
@@ -870,6 +912,244 @@ function mapAnnotationStageSummary(
     readyForNeoantigen: Boolean(dto.ready_for_neoantigen),
     latestRun: dto.latest_run ? mapAnnotationRun(dto.latest_run) : null,
     artifacts: (dto.artifacts ?? []).map(mapAnnotationArtifact),
+  };
+}
+
+// ----------------------------------------------------------------------------- //
+// Stage 5 — Neoantigen prediction
+// ----------------------------------------------------------------------------- //
+
+type PatientAlleleDto = {
+  allele: string;
+  class: MhcClass;
+  typing: AlleleTypingKind;
+  frequency?: number | null;
+  source?: string | null;
+};
+
+type BindingBucketDto = {
+  key: BindingTier;
+  label: string;
+  threshold: string;
+  plain: string;
+  count: number;
+};
+
+type HeatmapRowDto = {
+  seq: string;
+  gene: string;
+  mut: string;
+  length: number;
+  class: MhcClass;
+  vaf: number;
+  ic50: number[];
+  mut_pos?: number | null;
+};
+
+type HeatmapDataDto = {
+  alleles: string[];
+  peptides: HeatmapRowDto[];
+};
+
+type FunnelStepDto = {
+  label: string;
+  count: number;
+  hint: string;
+};
+
+type TopCandidateDto = {
+  seq: string;
+  gene: string;
+  mut: string;
+  length: number;
+  class: MhcClass;
+  allele: string;
+  ic50: number;
+  wt_ic50?: number | null;
+  agretopicity?: number | null;
+  vaf?: number | null;
+  tpm?: number | null;
+  cancer_gene: boolean;
+  strong: boolean;
+};
+
+type NeoantigenMetricsDto = {
+  pvacseq_version?: string | null;
+  netmhcpan_version?: string | null;
+  netmhciipan_version?: string | null;
+  species_label?: string | null;
+  assembly?: string | null;
+  alleles: PatientAlleleDto[];
+  annotated_variants: number;
+  protein_changing_variants: number;
+  peptides_generated: number;
+  visible_candidates: number;
+  class_i_count: number;
+  class_ii_count: number;
+  buckets: BindingBucketDto[];
+  heatmap: HeatmapDataDto;
+  funnel: FunnelStepDto[];
+  top: TopCandidateDto[];
+};
+
+type NeoantigenArtifactDto = {
+  id: string;
+  artifact_kind: NeoantigenArtifactKind;
+  filename: string;
+  size_bytes: number;
+  download_path: string;
+  local_path?: string | null;
+};
+
+type NeoantigenRunDto = {
+  id: string;
+  status: NeoantigenRunStatus;
+  progress: number;
+  runtime_phase?: NeoantigenRuntimePhase | null;
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  blocking_reason?: string | null;
+  error?: string | null;
+  command_log: string[];
+  metrics?: NeoantigenMetricsDto | null;
+  artifacts: NeoantigenArtifactDto[];
+};
+
+type NeoantigenStageSummaryDto = {
+  workspace_id: string;
+  status: NeoantigenStageStatus;
+  blocking_reason?: string | null;
+  ready_for_epitope_selection: boolean;
+  alleles: PatientAlleleDto[];
+  latest_run?: NeoantigenRunDto | null;
+  artifacts: NeoantigenArtifactDto[];
+};
+
+function mapPatientAllele(dto: PatientAlleleDto): PatientAllele {
+  return {
+    allele: dto.allele,
+    class: dto.class,
+    typing: dto.typing,
+    frequency: dto.frequency ?? null,
+    source: dto.source ?? null,
+  };
+}
+
+function mapBindingBucket(dto: BindingBucketDto): BindingBucket {
+  return {
+    key: dto.key,
+    label: dto.label,
+    threshold: dto.threshold,
+    plain: dto.plain,
+    count: dto.count,
+  };
+}
+
+function mapHeatmapRow(dto: HeatmapRowDto): HeatmapRow {
+  return {
+    seq: dto.seq,
+    gene: dto.gene,
+    mut: dto.mut,
+    length: dto.length,
+    class: dto.class,
+    vaf: dto.vaf,
+    ic50: dto.ic50 ?? [],
+    mutPos: dto.mut_pos ?? null,
+  };
+}
+
+function mapHeatmap(dto: HeatmapDataDto): HeatmapData {
+  return {
+    alleles: dto.alleles ?? [],
+    peptides: (dto.peptides ?? []).map(mapHeatmapRow),
+  };
+}
+
+function mapFunnelStep(dto: FunnelStepDto): FunnelStep {
+  return { label: dto.label, count: dto.count, hint: dto.hint };
+}
+
+function mapTopCandidate(dto: TopCandidateDto): TopCandidate {
+  return {
+    seq: dto.seq,
+    gene: dto.gene,
+    mut: dto.mut,
+    length: dto.length,
+    class: dto.class,
+    allele: dto.allele,
+    ic50: dto.ic50,
+    wtIc50: dto.wt_ic50 ?? null,
+    agretopicity: dto.agretopicity ?? null,
+    vaf: dto.vaf ?? null,
+    tpm: dto.tpm ?? null,
+    cancerGene: dto.cancer_gene,
+    strong: dto.strong,
+  };
+}
+
+function mapNeoantigenMetrics(dto: NeoantigenMetricsDto): NeoantigenMetrics {
+  return {
+    pvacseqVersion: dto.pvacseq_version ?? null,
+    netmhcpanVersion: dto.netmhcpan_version ?? null,
+    netmhciipanVersion: dto.netmhciipan_version ?? null,
+    speciesLabel: dto.species_label ?? null,
+    assembly: dto.assembly ?? null,
+    alleles: (dto.alleles ?? []).map(mapPatientAllele),
+    annotatedVariants: dto.annotated_variants,
+    proteinChangingVariants: dto.protein_changing_variants,
+    peptidesGenerated: dto.peptides_generated,
+    visibleCandidates: dto.visible_candidates,
+    classICount: dto.class_i_count,
+    classIICount: dto.class_ii_count,
+    buckets: (dto.buckets ?? []).map(mapBindingBucket),
+    heatmap: mapHeatmap(dto.heatmap ?? { alleles: [], peptides: [] }),
+    funnel: (dto.funnel ?? []).map(mapFunnelStep),
+    top: (dto.top ?? []).map(mapTopCandidate),
+  };
+}
+
+function mapNeoantigenArtifact(dto: NeoantigenArtifactDto): NeoantigenArtifact {
+  return {
+    id: dto.id,
+    artifactKind: dto.artifact_kind,
+    filename: dto.filename,
+    sizeBytes: dto.size_bytes,
+    downloadPath: dto.download_path,
+    localPath: dto.local_path ?? null,
+  };
+}
+
+function mapNeoantigenRun(dto: NeoantigenRunDto): NeoantigenRun {
+  return {
+    id: dto.id,
+    status: dto.status,
+    progress: dto.progress,
+    runtimePhase: dto.runtime_phase ?? null,
+    createdAt: dto.created_at,
+    updatedAt: dto.updated_at,
+    startedAt: dto.started_at ?? null,
+    completedAt: dto.completed_at ?? null,
+    blockingReason: dto.blocking_reason ?? null,
+    error: dto.error ?? null,
+    commandLog: dto.command_log ?? [],
+    metrics: dto.metrics ? mapNeoantigenMetrics(dto.metrics) : null,
+    artifacts: (dto.artifacts ?? []).map(mapNeoantigenArtifact),
+  };
+}
+
+function mapNeoantigenStageSummary(
+  dto: NeoantigenStageSummaryDto
+): NeoantigenStageSummary {
+  return {
+    workspaceId: dto.workspace_id,
+    status: dto.status,
+    blockingReason: dto.blocking_reason ?? null,
+    readyForEpitopeSelection: Boolean(dto.ready_for_epitope_selection),
+    alleles: (dto.alleles ?? []).map(mapPatientAllele),
+    latestRun: dto.latest_run ? mapNeoantigenRun(dto.latest_run) : null,
+    artifacts: (dto.artifacts ?? []).map(mapNeoantigenArtifact),
   };
 }
 
@@ -1371,6 +1651,90 @@ export const api = {
       await request<AnnotationStageSummaryDto>(
         `/api/workspaces/${workspaceId}/annotation/runs/${runId}/resume`,
         { method: "POST" }
+      )
+    ),
+  getGeneProteinDomains: async (
+    workspaceId: string,
+    geneSymbol: string,
+  ): Promise<GeneDomainsResponse> => {
+    const dto = await request<GeneDomainsDto>(
+      `/api/workspaces/${workspaceId}/annotation/genes/${encodeURIComponent(
+        geneSymbol,
+      )}/domains`,
+    );
+    return {
+      symbol: dto.symbol,
+      transcriptId: dto.transcript_id ?? null,
+      proteinLength: dto.protein_length ?? null,
+      domains: (dto.domains ?? []).map((d) => ({
+        start: d.start,
+        end: d.end,
+        label: d.label,
+        kind: d.kind ?? undefined,
+      })),
+    };
+  },
+  getNeoantigenStageSummary: async (workspaceId: string) =>
+    mapNeoantigenStageSummary(
+      await request<NeoantigenStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/neoantigen`
+      )
+    ),
+  runNeoantigen: async (workspaceId: string) =>
+    mapNeoantigenStageSummary(
+      await request<NeoantigenStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/neoantigen/run`,
+        { method: "POST" }
+      )
+    ),
+  rerunNeoantigen: async (workspaceId: string) =>
+    mapNeoantigenStageSummary(
+      await request<NeoantigenStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/neoantigen/rerun`,
+        { method: "POST" }
+      )
+    ),
+  cancelNeoantigen: async (workspaceId: string, runId: string) =>
+    mapNeoantigenStageSummary(
+      await request<NeoantigenStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/neoantigen/runs/${runId}/cancel`,
+        { method: "POST" }
+      )
+    ),
+  pauseNeoantigen: async (workspaceId: string, runId: string) =>
+    mapNeoantigenStageSummary(
+      await request<NeoantigenStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/neoantigen/runs/${runId}/pause`,
+        { method: "POST" }
+      )
+    ),
+  resumeNeoantigen: async (workspaceId: string, runId: string) =>
+    mapNeoantigenStageSummary(
+      await request<NeoantigenStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/neoantigen/runs/${runId}/resume`,
+        { method: "POST" }
+      )
+    ),
+  updateNeoantigenAlleles: async (
+    workspaceId: string,
+    alleles: PatientAllele[]
+  ) =>
+    mapNeoantigenStageSummary(
+      await request<NeoantigenStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/neoantigen/alleles`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            alleles: alleles.map((a) => ({
+              allele: a.allele,
+              class: a.class,
+              typing: a.typing,
+              frequency: a.frequency ?? null,
+              source: a.source ?? null,
+            })),
+          }),
+        }
       )
     ),
   getSystemMemory: async (): Promise<SystemMemoryResponse> => {

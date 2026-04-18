@@ -508,12 +508,30 @@ class GeneFocusVariant(BaseModel):
     tumor_vaf: Optional[float] = None
 
 
+class ProteinDomain(BaseModel):
+    start: int
+    end: int
+    label: str
+    # "catalytic" flags the business-end band that variant hotspots tend to
+    # cluster in (kinase, DNA-binding, etc.). Rendered in the theme accent
+    # colour; everything else renders neutral grey.
+    kind: Optional[Literal["catalytic", "neutral"]] = None
+
+
 class GeneFocus(BaseModel):
     symbol: str
     role: Optional[str] = None
     transcript_id: Optional[str] = None
     protein_length: Optional[int] = None
     variants: List[GeneFocusVariant] = Field(default_factory=list)
+    domains: Optional[List[ProteinDomain]] = None
+
+
+class GeneDomainsResponse(BaseModel):
+    symbol: str
+    transcript_id: Optional[str] = None
+    protein_length: Optional[int] = None
+    domains: List[ProteinDomain] = Field(default_factory=list)
 
 
 class AnnotatedVariantEntry(BaseModel):
@@ -614,3 +632,168 @@ class VaccineConstruct(BaseModel):
     codon_adaptation_index: float
     mfe_kcal: float
     gc_content: float
+
+
+# --------------------------------------------------------------------------- #
+# Stage 5 — Neoantigen prediction (pVACseq + NetMHCpan)
+# --------------------------------------------------------------------------- #
+
+
+class NeoantigenRunStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    PAUSED = "paused"
+
+
+class NeoantigenStageStatus(str, Enum):
+    BLOCKED = "blocked"
+    SCAFFOLDED = "scaffolded"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PAUSED = "paused"
+
+
+class NeoantigenRuntimePhase(str, Enum):
+    GENERATING_FASTA = "generating_fasta"
+    RUNNING_CLASS_I = "running_class_i"
+    RUNNING_CLASS_II = "running_class_ii"
+    PARSING = "parsing"
+    FINALIZING = "finalizing"
+
+
+class NeoantigenArtifactKind(str, Enum):
+    ALL_EPITOPES_CLASS_I = "all_epitopes_class_i"
+    FILTERED_CLASS_I = "filtered_class_i"
+    ALL_EPITOPES_CLASS_II = "all_epitopes_class_ii"
+    FILTERED_CLASS_II = "filtered_class_ii"
+    PVACSEQ_LOG = "pvacseq_log"
+
+
+MhcClass = Literal["I", "II"]
+AlleleTypingKind = Literal["typed", "inferred"]
+BindingTier = Literal["strong", "moderate", "weak", "none"]
+
+
+class PatientAllele(BaseModel):
+    allele: str
+    mhc_class: MhcClass = Field(..., alias="class")
+    typing: AlleleTypingKind = "inferred"
+    frequency: Optional[float] = None
+    source: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+
+
+class BindingBucket(BaseModel):
+    key: BindingTier
+    label: str
+    threshold: str
+    plain: str
+    count: int
+
+
+class HeatmapRow(BaseModel):
+    seq: str
+    gene: str
+    mut: str
+    length: int
+    mhc_class: MhcClass = Field(..., alias="class")
+    vaf: float
+    ic50: List[float] = Field(default_factory=list)
+    mut_pos: Optional[int] = None
+
+    class Config:
+        populate_by_name = True
+
+
+class HeatmapData(BaseModel):
+    alleles: List[str] = Field(default_factory=list)
+    peptides: List[HeatmapRow] = Field(default_factory=list)
+
+
+class FunnelStep(BaseModel):
+    label: str
+    count: int
+    hint: str
+
+
+class TopCandidate(BaseModel):
+    seq: str
+    gene: str
+    mut: str
+    length: int
+    mhc_class: MhcClass = Field(..., alias="class")
+    allele: str
+    ic50: float
+    wt_ic50: Optional[float] = None
+    agretopicity: Optional[float] = None
+    vaf: Optional[float] = None
+    tpm: Optional[float] = None
+    cancer_gene: bool = False
+    strong: bool = False
+
+    class Config:
+        populate_by_name = True
+
+
+class NeoantigenMetricsResponse(BaseModel):
+    pvacseq_version: Optional[str] = None
+    netmhcpan_version: Optional[str] = None
+    netmhciipan_version: Optional[str] = None
+    species_label: Optional[str] = None
+    assembly: Optional[str] = None
+    alleles: List[PatientAllele] = Field(default_factory=list)
+    annotated_variants: int = 0
+    protein_changing_variants: int = 0
+    peptides_generated: int = 0
+    visible_candidates: int = 0
+    class_i_count: int = 0
+    class_ii_count: int = 0
+    buckets: List[BindingBucket] = Field(default_factory=list)
+    heatmap: HeatmapData = Field(default_factory=HeatmapData)
+    funnel: List[FunnelStep] = Field(default_factory=list)
+    top: List[TopCandidate] = Field(default_factory=list)
+
+
+class NeoantigenArtifactResponse(BaseModel):
+    id: str
+    artifact_kind: NeoantigenArtifactKind
+    filename: str
+    size_bytes: int
+    download_path: str
+    local_path: Optional[str] = None
+
+
+class NeoantigenRunResponse(BaseModel):
+    id: str
+    status: NeoantigenRunStatus
+    progress: float = 0.0
+    runtime_phase: Optional[NeoantigenRuntimePhase] = None
+    created_at: str
+    updated_at: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    blocking_reason: Optional[str] = None
+    error: Optional[str] = None
+    command_log: List[str] = Field(default_factory=list)
+    metrics: Optional[NeoantigenMetricsResponse] = None
+    artifacts: List[NeoantigenArtifactResponse] = Field(default_factory=list)
+
+
+class NeoantigenStageSummaryResponse(BaseModel):
+    workspace_id: str
+    status: NeoantigenStageStatus
+    blocking_reason: Optional[str] = None
+    ready_for_epitope_selection: bool = False
+    alleles: List[PatientAllele] = Field(default_factory=list)
+    latest_run: Optional[NeoantigenRunResponse] = None
+    artifacts: List[NeoantigenArtifactResponse] = Field(default_factory=list)
+
+
+class NeoantigenAllelesUpdate(BaseModel):
+    alleles: List[PatientAllele]
