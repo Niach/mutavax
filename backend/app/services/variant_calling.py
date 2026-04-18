@@ -1860,11 +1860,6 @@ def compute_variant_metrics(
         if variant.variant_type == VariantTypeKind.SNV:
             snv += 1
             chrom_bucket["snv"] += 1
-            pair = (variant.ref, variant.alt)
-            if pair in TRANSITION_PAIRS:
-                transitions += 1
-            elif variant.ref in {"A", "C", "G", "T"} and variant.alt in {"A", "C", "G", "T"}:
-                transversions += 1
         else:
             indel += 1
             chrom_bucket["indel"] += 1
@@ -1875,24 +1870,35 @@ def compute_variant_metrics(
             else:
                 mnv += 1
 
+        filter_counts[variant.filter_value] += 1
+
         if variant.is_pass:
             pass_count += 1
             chrom_bucket["pass"] += 1
             if variant.variant_type == VariantTypeKind.SNV:
                 pass_snv += 1
+                pair = (variant.ref, variant.alt)
+                if pair in TRANSITION_PAIRS:
+                    transitions += 1
+                elif variant.ref in {"A", "C", "G", "T"} and variant.alt in {
+                    "A",
+                    "C",
+                    "G",
+                    "T",
+                }:
+                    transversions += 1
             else:
                 pass_indel += 1
 
-        filter_counts[variant.filter_value] += 1
+            # PASS-only distributions — the UI ribbon reports somatic-signal
+            # summaries (median VAF, mean depth, Ti/Tv), not raw-call junk.
+            if variant.tumor_vaf is not None:
+                vaf_values.append(variant.tumor_vaf)
+            if variant.tumor_depth is not None:
+                tumor_depths.append(variant.tumor_depth)
+            if variant.normal_depth is not None:
+                normal_depths.append(variant.normal_depth)
 
-        if variant.tumor_vaf is not None:
-            vaf_values.append(variant.tumor_vaf)
-        if variant.tumor_depth is not None:
-            tumor_depths.append(variant.tumor_depth)
-        if variant.normal_depth is not None:
-            normal_depths.append(variant.normal_depth)
-
-        if variant.is_pass:
             top_candidates.append(variant)
 
     chrom_lengths = _chromosome_lengths_from_fai(reference_path)
