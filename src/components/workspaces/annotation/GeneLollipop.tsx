@@ -2,254 +2,434 @@
 
 import { useMemo, useState } from "react";
 
-import type { AnnotationImpactTier, GeneFocus } from "@/lib/types";
+import { Card, Eyebrow, MonoLabel } from "@/components/ui-kit";
+import type {
+  AnnotationImpactTier,
+  GeneFocus,
+  ProteinDomain,
+} from "@/lib/types";
+import { getProteinDomainPreset } from "./proteinDomainPresets";
 
 interface GeneLollipopProps {
   focus: GeneFocus;
 }
 
-const IMPACT_FILL: Record<AnnotationImpactTier, string> = {
-  HIGH: "#e11d48",
-  MODERATE: "#d97706",
-  LOW: "#0284c7",
-  MODIFIER: "#78716c",
+const IMPACT_COLOR: Record<AnnotationImpactTier, { fill: string; label: string }> = {
+  HIGH: { fill: "#e11d48", label: "high impact" },
+  MODERATE: { fill: "#d97706", label: "moderate impact" },
+  LOW: { fill: "#0284c7", label: "low impact" },
+  MODIFIER: { fill: "#78716c", label: "modifier" },
 };
 
 const IMPACT_STICK: Record<AnnotationImpactTier, number> = {
-  HIGH: 52,
-  MODERATE: 40,
-  LOW: 28,
-  MODIFIER: 18,
+  HIGH: 82,
+  MODERATE: 58,
+  LOW: 38,
+  MODIFIER: 24,
 };
 
-const CHART_HEIGHT = 220;
-const TRACK_Y = CHART_HEIGHT - 42;
-const PADDING_X = 32;
+const DOMAIN_NEUTRAL_FILL = "#a8a29e";
+const DOMAIN_CATALYTIC_FILL =
+  "color-mix(in oklch, var(--accent) 55%, #a8a29e)";
 
-function plainConsequence(raw: string | null | undefined) {
-  if (!raw) return null;
-  return raw.split("&")[0].replace(/_/g, " ");
+function domainFill(domain: ProteinDomain): string {
+  return domain.kind === "catalytic"
+    ? DOMAIN_CATALYTIC_FILL
+    : DOMAIN_NEUTRAL_FILL;
 }
 
 export default function GeneLollipop({ focus }: GeneLollipopProps) {
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [hover, setHover] = useState<number | null>(null);
 
-  const { proteinLength, pointVariants, chartWidth, inferredLength } = useMemo(() => {
-    const explicit = focus.proteinLength ?? 0;
-    const maxPos = focus.variants.reduce((acc, v) => {
-      if (v.proteinPosition != null) return Math.max(acc, v.proteinPosition);
-      return acc;
-    }, 0);
-    const inferred = !explicit || explicit < maxPos;
-    // Choose a sensible display length. If VEP gave us a protein length, use it.
-    // Otherwise infer from the furthest mutation, rounded up for headroom.
-    let length = explicit;
-    if (!length) {
-      length = Math.max(100, Math.ceil((maxPos * 1.1) / 50) * 50);
-    }
-    const width = 640;
-    const points = focus.variants.map((v, index) => {
-      const pos = v.proteinPosition ?? Math.round(length / 2);
-      const x = PADDING_X + ((pos / length) * (width - PADDING_X * 2));
-      return {
-        ...v,
-        index,
-        x,
-        stick: IMPACT_STICK[v.impact] ?? 24,
-        fill: IMPACT_FILL[v.impact] ?? "#78716c",
-      };
-    });
-    return {
-      proteinLength: length,
-      pointVariants: points,
-      chartWidth: width,
-      inferredLength: inferred,
-    };
-  }, [focus]);
+  const preset = useMemo(
+    () => getProteinDomainPreset(focus.symbol),
+    [focus.symbol],
+  );
 
-  const hovered = hoverIndex != null ? pointVariants[hoverIndex] : null;
+  const variants = focus.variants.filter(
+    (v) => v.proteinPosition != null && v.proteinPosition > 0,
+  );
+
+  const variantMaxPos = variants.reduce(
+    (acc, v) => Math.max(acc, v.proteinPosition ?? 0),
+    0,
+  );
+  const presetMaxDomain = preset
+    ? preset.domains.reduce((acc, d) => Math.max(acc, d.end), 0)
+    : 0;
+  const vepLength = focus.proteinLength ?? 0;
+  const explicitLength = vepLength > 0 ? vepLength : preset?.proteinLength ?? 0;
+  const length =
+    explicitLength > 0 && explicitLength >= variantMaxPos
+      ? explicitLength
+      : Math.max(variantMaxPos * 1.1, presetMaxDomain, 100);
+  const inferredLength = explicitLength === 0 || explicitLength < variantMaxPos;
+  const domains: ProteinDomain[] =
+    focus.domains && focus.domains.length > 0
+      ? focus.domains
+      : preset?.domains ?? [];
+  const role =
+    focus.role && focus.role.trim().length > 0
+      ? focus.role
+      : preset?.role ?? null;
+
+  if (!variants.length) return null;
+
+  const W = 900;
+  const H = 260;
+  const PX = 46;
+  const TRACK_Y = H - 72;
+  const trackXStart = PX - 4;
+  const trackWidth = W - (PX - 4) * 2;
 
   return (
-    <div className="rounded-2xl border border-stone-200 bg-white p-4">
-      <div className="flex items-baseline justify-between">
+    <Card style={{ marginBottom: 16 }}>
+      <div
+        style={{
+          padding: "18px 22px 10px",
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
         <div>
-          <div className="font-mono text-[10px] uppercase tracking-[0.24em] text-stone-400">
-            Mutation map
-          </div>
-          <h4 className="mt-0.5 font-display text-[20px] font-light text-stone-900">
-            <span className="font-semibold tracking-wide">{focus.symbol}</span>{" "}
-            <span className="text-stone-500">·</span>{" "}
-            <span className="text-[15px] text-stone-500">
-              {focus.variants.length} mutation{focus.variants.length === 1 ? "" : "s"} along the protein
+          <Eyebrow>Mutation map</Eyebrow>
+          <h3
+            style={{
+              margin: "4px 0 0",
+              fontFamily: "var(--font-display)",
+              fontWeight: 500,
+              fontSize: 22,
+              letterSpacing: "-0.02em",
+              color: "var(--ink)",
+            }}
+          >
+            <span style={{ fontWeight: 600, letterSpacing: "0.02em" }}>
+              {focus.symbol}
+            </span>{" "}
+            <span style={{ color: "var(--muted-2)" }}>·</span>{" "}
+            <span
+              style={{
+                color: "var(--muted)",
+                fontSize: 16,
+                fontWeight: 400,
+              }}
+            >
+              {variants.length} mutation{variants.length === 1 ? "" : "s"} along the protein
             </span>
-          </h4>
+          </h3>
+          {role ? (
+            <div style={{ marginTop: 6, fontSize: 13.5, color: "var(--muted)" }}>
+              Role: <span style={{ color: "var(--ink-2)" }}>{role}</span>
+              {domains.length > 0 ? (
+                <span
+                  style={{
+                    marginLeft: 12,
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11.5,
+                    color: "var(--muted-2)",
+                    letterSpacing: "0.08em",
+                  }}
+                >
+                  Click cancer-gene cards above to swap
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
-        <div className="text-right">
-          <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-stone-400">
+        <div style={{ textAlign: "right", minWidth: 110 }}>
+          <MonoLabel style={{ fontSize: 11, whiteSpace: "nowrap" }}>
             protein length
-          </div>
-          <div className="font-mono text-[13px] text-stone-700">
-            {proteinLength} aa{inferredLength ? " (approx)" : ""}
+          </MonoLabel>
+          <div
+            style={{
+              marginTop: 4,
+              fontFamily: "var(--font-mono)",
+              fontSize: 14,
+              color: "var(--ink-2)",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {Math.round(length)} aa
+            {inferredLength ? (
+              <span
+                style={{
+                  marginLeft: 4,
+                  fontSize: 11,
+                  color: "var(--muted-2)",
+                }}
+              >
+                (approx)
+              </span>
+            ) : null}
           </div>
         </div>
       </div>
 
-      {focus.role ? (
-        <div className="mt-1 text-[12px] text-stone-500">
-          Role: <span className="text-stone-700">{focus.role}</span>
-        </div>
-      ) : null}
-
-      <div className="relative mt-3">
+      <div style={{ position: "relative", padding: "0 12px 18px" }}>
         <svg
-          viewBox={`0 0 ${chartWidth} ${CHART_HEIGHT}`}
-          className="h-[220px] w-full"
-          role="img"
-          aria-label={`Lollipop map of ${focus.variants.length} mutations along ${focus.symbol}`}
+          viewBox={`0 0 ${W} ${H}`}
+          style={{ width: "100%", height: "auto", display: "block" }}
         >
-          {/* Track */}
-          <rect
-            x={PADDING_X - 4}
-            y={TRACK_Y - 6}
-            rx={6}
-            ry={6}
-            width={chartWidth - (PADDING_X - 4) * 2}
-            height={12}
-            fill="#f5f5f4"
-          />
-          <rect
-            x={PADDING_X - 4}
-            y={TRACK_Y - 6}
-            rx={6}
-            ry={6}
-            width={chartWidth - (PADDING_X - 4) * 2}
-            height={12}
-            fill="url(#track-gradient)"
-            opacity={0.55}
-          />
           <defs>
-            <linearGradient id="track-gradient" x1="0" x2="1">
-              <stop offset="0%" stopColor="#a8a29e" stopOpacity="0.35" />
-              <stop offset="100%" stopColor="#a8a29e" stopOpacity="0.1" />
+            <linearGradient id="cs-lolli-track" x1="0" x2="1">
+              <stop
+                offset="0%"
+                stopColor="color-mix(in oklch, var(--ink) 22%, transparent)"
+              />
+              <stop
+                offset="100%"
+                stopColor="color-mix(in oklch, var(--ink) 8%, transparent)"
+              />
             </linearGradient>
           </defs>
 
-          {/* Tick marks at 0 / 25 / 50 / 75 / 100 percent */}
-          {[0, 0.25, 0.5, 0.75, 1].map((pct) => {
-            const x = PADDING_X + pct * (chartWidth - PADDING_X * 2);
+          <rect
+            x={trackXStart}
+            y={TRACK_Y - 8}
+            rx={8}
+            ry={8}
+            width={trackWidth}
+            height={16}
+            fill="var(--surface-sunk)"
+          />
+          <rect
+            x={trackXStart}
+            y={TRACK_Y - 8}
+            rx={8}
+            ry={8}
+            width={trackWidth}
+            height={16}
+            fill="url(#cs-lolli-track)"
+            opacity={0.6}
+          />
+
+          {domains.map((domain, idx) => {
+            const startX = PX + (domain.start / length) * (W - PX * 2);
+            const endX = PX + (domain.end / length) * (W - PX * 2);
+            const bandWidth = Math.max(endX - startX, 6);
+            const fill = domainFill(domain);
+            const showLabel = bandWidth > 58;
             return (
-              <g key={pct}>
+              <g key={`${domain.label}-${idx}`}>
+                <rect
+                  x={startX}
+                  y={TRACK_Y - 10}
+                  rx={6}
+                  ry={6}
+                  width={bandWidth}
+                  height={20}
+                  fill={fill}
+                  opacity={0.88}
+                />
+                {showLabel ? (
+                  <text
+                    x={startX + bandWidth / 2}
+                    y={TRACK_Y + 4}
+                    textAnchor="middle"
+                    fill="#fff"
+                    fontFamily="var(--font-mono)"
+                    fontSize={10}
+                    fontWeight={600}
+                    letterSpacing="0.06em"
+                    style={{ pointerEvents: "none" }}
+                  >
+                    {domain.label}
+                  </text>
+                ) : null}
+                <title>{`${domain.label} · ${domain.start}–${domain.end} aa`}</title>
+              </g>
+            );
+          })}
+
+          {[0, 0.25, 0.5, 0.75, 1].map((pct, i) => {
+            const x = PX + pct * (W - PX * 2);
+            return (
+              <g key={i}>
                 <line
                   x1={x}
                   x2={x}
-                  y1={TRACK_Y - 12}
-                  y2={TRACK_Y + 12}
-                  stroke="#d6d3d1"
+                  y1={TRACK_Y + 14}
+                  y2={TRACK_Y + 22}
+                  stroke="var(--line-strong)"
                   strokeWidth={1}
                 />
                 <text
                   x={x}
-                  y={TRACK_Y + 26}
+                  y={TRACK_Y + 40}
                   textAnchor="middle"
-                  className="fill-stone-400 font-mono"
-                  fontSize={10}
+                  fill="var(--muted-2)"
+                  fontFamily="var(--font-mono)"
+                  fontSize={11}
+                  style={{ fontVariantNumeric: "tabular-nums" }}
                 >
-                  {Math.round(pct * proteinLength)}
+                  {Math.round(pct * length)}
                 </text>
               </g>
             );
           })}
 
-          {/* N / C labels */}
           <text
-            x={PADDING_X - 8}
-            y={TRACK_Y + 3}
+            x={PX - 12}
+            y={TRACK_Y + 4}
             textAnchor="end"
-            className="fill-stone-400 font-mono"
-            fontSize={10}
+            fill="var(--muted)"
+            fontFamily="var(--font-mono)"
+            fontSize={12}
+            fontWeight={600}
           >
             N
           </text>
           <text
-            x={chartWidth - PADDING_X + 8}
-            y={TRACK_Y + 3}
+            x={W - PX + 12}
+            y={TRACK_Y + 4}
             textAnchor="start"
-            className="fill-stone-400 font-mono"
-            fontSize={10}
+            fill="var(--muted)"
+            fontFamily="var(--font-mono)"
+            fontSize={12}
+            fontWeight={600}
           >
             C
           </text>
 
-          {/* Lollipops */}
-          {pointVariants.map((variant) => {
-            const topY = TRACK_Y - variant.stick;
-            const isHovered = hoverIndex === variant.index;
-            const radius = isHovered ? 7 : 5;
+          {variants.map((v, i) => {
+            const pos = v.proteinPosition ?? 0;
+            const x = PX + (pos / length) * (W - PX * 2);
+            const stick = IMPACT_STICK[v.impact] ?? 30;
+            const topY = TRACK_Y - stick;
+            const color = IMPACT_COLOR[v.impact].fill;
+            const isHover = hover === i;
+            const r = isHover ? 9 : 7;
             return (
               <g
-                key={variant.index}
-                onMouseEnter={() => setHoverIndex(variant.index)}
-                onMouseLeave={() => setHoverIndex(null)}
-                className="cursor-pointer"
+                key={i}
+                onMouseEnter={() => setHover(i)}
+                onMouseLeave={() => setHover(null)}
+                style={{ cursor: "pointer" }}
               >
                 <line
-                  x1={variant.x}
-                  x2={variant.x}
-                  y1={TRACK_Y - 6}
+                  x1={x}
+                  x2={x}
+                  y1={TRACK_Y - 8}
                   y2={topY}
-                  stroke={variant.fill}
-                  strokeWidth={isHovered ? 2 : 1.5}
-                  opacity={0.7}
+                  stroke={color}
+                  strokeWidth={isHover ? 2.5 : 1.75}
+                  opacity={0.75}
                 />
+                <circle cx={x} cy={topY} r={r + 3} fill={color} opacity={0.15} />
                 <circle
-                  cx={variant.x}
+                  cx={x}
                   cy={topY}
-                  r={radius}
-                  fill={variant.fill}
-                  stroke="#fff"
-                  strokeWidth={1.5}
+                  r={r}
+                  fill={color}
+                  stroke="var(--surface-strong)"
+                  strokeWidth={2}
                 />
+                {isHover && v.hgvsp ? (
+                  <text
+                    x={x}
+                    y={topY - 14}
+                    textAnchor="middle"
+                    fill="var(--ink)"
+                    fontFamily="var(--font-mono)"
+                    fontSize={11}
+                    fontWeight={600}
+                  >
+                    {v.hgvsp}
+                  </text>
+                ) : null}
               </g>
             );
           })}
         </svg>
 
-        {hovered ? (
+        {hover != null && variants[hover] ? (
           <div
-            className="pointer-events-none absolute z-10 rounded-lg border border-stone-200 bg-white px-3 py-2 text-[11px] text-stone-700 shadow-md shadow-black/5"
             style={{
-              left: `calc(${(hovered.x / chartWidth) * 100}% - 120px)`,
-              top: 6,
-              width: 240,
+              position: "absolute",
+              top: 10,
+              right: 20,
+              padding: "10px 14px",
+              borderRadius: 10,
+              background: "var(--surface-strong)",
+              border: "1px solid var(--line-strong)",
+              boxShadow: "0 12px 32px -12px rgba(0,0,0,0.15)",
+              fontSize: 12.5,
+              minWidth: 180,
             }}
           >
-            <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-stone-400">
-              position {hovered.proteinPosition ?? "?"}
+            <MonoLabel style={{ fontSize: 10.5 }}>
+              position {variants[hover].proteinPosition}
+            </MonoLabel>
+            <div
+              style={{
+                marginTop: 4,
+                fontFamily: "var(--font-mono)",
+                fontSize: 13.5,
+                color: "var(--ink)",
+                fontWeight: 500,
+              }}
+            >
+              {variants[hover].hgvsp ?? "—"}
             </div>
-            <div className="mt-0.5 font-mono text-[12px] text-stone-800">
-              {hovered.hgvsp?.split(":").pop() || plainConsequence(hovered.consequence) || "—"}
-            </div>
-            <div className="mt-0.5 text-[10px] text-stone-500">
-              {plainConsequence(hovered.consequence)} ·{" "}
-              {hovered.tumorVaf != null
-                ? `${(hovered.tumorVaf * 100).toFixed(1)}% VAF`
-                : "no VAF"}
+            <div
+              style={{ marginTop: 3, fontSize: 12, color: "var(--muted)" }}
+            >
+              {IMPACT_COLOR[variants[hover].impact].label}
+              {variants[hover].tumorVaf != null
+                ? ` · ${(variants[hover].tumorVaf * 100).toFixed(1)}% VAF`
+                : ""}
             </div>
           </div>
         ) : null}
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-stone-500">
-        {(["HIGH", "MODERATE", "LOW", "MODIFIER"] as AnnotationImpactTier[]).map((tier) => (
-          <div key={tier} className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-2 w-2 rounded-full"
-              style={{ backgroundColor: IMPACT_FILL[tier] }}
-            />
-            <span className="font-mono tracking-[0.08em]">{tier.toLowerCase()}</span>
-          </div>
-        ))}
+      <div
+        style={{
+          padding: "10px 22px 18px",
+          display: "flex",
+          gap: 18,
+          flexWrap: "wrap",
+          borderTop: "1px solid var(--line)",
+        }}
+      >
+        {(["HIGH", "MODERATE", "LOW", "MODIFIER"] as AnnotationImpactTier[]).map(
+          (tier) => (
+            <div
+              key={tier}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                whiteSpace: "nowrap",
+              }}
+            >
+              <span
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: 999,
+                  background: IMPACT_COLOR[tier].fill,
+                  boxShadow: `0 0 10px ${IMPACT_COLOR[tier].fill}40`,
+                }}
+              />
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11.5,
+                  color: "var(--muted)",
+                  textTransform: "lowercase",
+                  letterSpacing: "0.08em",
+                }}
+              >
+                {tier.toLowerCase()}
+              </span>
+            </div>
+          )
+        )}
       </div>
-    </div>
+    </Card>
   );
 }

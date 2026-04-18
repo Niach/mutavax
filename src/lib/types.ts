@@ -454,12 +454,20 @@ export interface GeneFocusVariant {
   tumorVaf?: number | null;
 }
 
+export interface ProteinDomain {
+  start: number;
+  end: number;
+  label: string;
+  kind?: "catalytic" | "neutral";
+}
+
 export interface GeneFocus {
   symbol: string;
   role?: string | null;
   transcriptId?: string | null;
   proteinLength?: number | null;
   variants: GeneFocusVariant[];
+  domains?: ProteinDomain[] | null;
 }
 
 export interface AnnotatedVariantEntry {
