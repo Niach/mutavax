@@ -648,6 +648,13 @@
 }
 @keyframes cs-sheen { 0% { transform: translateX(-40%); } 100% { transform: translateX(40%); } }
 
+/* Contained pulse for individual chunk cells — stays inside its own
+   bounding box so adjacent "running" cells don't glow into each other. */
+@keyframes cs-chunk-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
 .cs-progress-sub {
   height: 3px;
   border-radius: 999px;

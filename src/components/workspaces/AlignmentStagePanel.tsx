@@ -9,7 +9,6 @@ import {
   Callout,
   Card,
   CardHead,
-  Chip,
   Dot,
   Eyebrow,
   MonoLabel,
@@ -129,25 +128,7 @@ export default function AlignmentStagePanel({
           <div className="cs-crumb">{workspace.displayName} / 02 Alignment</div>
           <h1>
             {bannerState === "fresh" && `Align reads to ${referenceCode}.`}
-            {bannerState === "running" && (
-              <>
-                Aligning{latestRun?.etaSeconds != null ? (
-                  <>
-                    {" "}·{" "}
-                    <span
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "0.7em",
-                        color: "var(--muted)",
-                      }}
-                    >
-                      ETA {formatEta(latestRun.etaSeconds)}
-                    </span>
-                  </>
-                ) : null}
-                .
-              </>
-            )}
+            {bannerState === "running" && "Aligning."}
             {bannerState === "paused" && "Paused. Progress kept."}
             {bannerState === "complete" &&
               (summary.qcVerdict === "warn" ? (
@@ -183,36 +164,6 @@ export default function AlignmentStagePanel({
             reference genome. It runs in parallel, saves as it goes, and you can
             pause any time without losing work.
           </p>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <Chip kind="live">Stage 02 · Live</Chip>
-          <div
-            style={{
-              marginTop: 6,
-              fontSize: 11.5,
-              fontFamily: "var(--font-mono)",
-              color:
-                bannerState === "complete" && summary.qcVerdict === "pass"
-                  ? "var(--accent-ink)"
-                  : bannerState === "running" || bannerState === "paused"
-                    ? "var(--warm)"
-                    : "var(--muted)",
-            }}
-          >
-            {bannerState === "complete" && summary.qcVerdict === "pass"
-              ? "QC PASS"
-              : bannerState === "complete" && summary.qcVerdict === "warn"
-                ? "QC WARN"
-                : bannerState === "complete" && summary.qcVerdict === "fail"
-                  ? "QC FAIL"
-                  : bannerState === "running"
-                    ? "RUNNING"
-                    : bannerState === "paused"
-                      ? "PAUSED"
-                      : bannerState === "failed"
-                        ? "FAILED"
-                        : "READY"}
-          </div>
         </div>
       </div>
 
@@ -735,11 +686,9 @@ function ChunkGrid({
               height: size,
               borderRadius: 3,
               background: bg,
-              boxShadow:
-                state === "running" ? `0 0 8px oklch(0.8 0.14 55)` : "none",
               animation:
                 state === "running"
-                  ? "cs-sheen 1.2s ease-in-out infinite"
+                  ? "cs-chunk-pulse 1.4s ease-in-out infinite"
                   : "none",
             }}
             title={`chunk ${i + 1} · ${state}`}
