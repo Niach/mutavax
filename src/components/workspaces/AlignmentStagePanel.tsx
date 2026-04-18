@@ -339,7 +339,21 @@ export default function AlignmentStagePanel({
                         saved to disk
                       </div>
                     </>
-                  ) : (
+                  ) : bannerState === "failed" ? (
+                    <>
+                      <MonoLabel>Failed</MonoLabel>
+                      <div
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 14,
+                          marginTop: 4,
+                          color: "var(--danger)",
+                        }}
+                      >
+                        needs another try
+                      </div>
+                    </>
+                  ) : bannerState === "complete" ? (
                     <>
                       <MonoLabel>Finished in</MonoLabel>
                       <div
@@ -353,7 +367,7 @@ export default function AlignmentStagePanel({
                         {formatElapsedLabel(latestRun) ?? "—"}
                       </div>
                     </>
-                  )}
+                  ) : null}
                 </div>
               </div>
 
