@@ -34,45 +34,19 @@ export default async function Home() {
           <div className="cs-hero-grid">
             <div>
               <Eyebrow>cancerstudio · desktop studio</Eyebrow>
-              <h1
-                style={{
-                  fontFamily: "var(--font-display)",
-                  fontWeight: 400,
-                  fontSize: 58,
-                  letterSpacing: "-0.028em",
-                  lineHeight: 1.04,
-                  margin: "14px 0 20px",
-                  color: "var(--ink)",
-                  textWrap: "pretty",
-                }}
-              >
+              <h1 className="cs-landing-title">
                 Two DNA samples.
                 <br />
                 One guided path to a personalized cancer vaccine.
               </h1>
-              <p
-                style={{
-                  fontSize: 18,
-                  lineHeight: 1.6,
-                  maxWidth: "52ch",
-                  color: "var(--ink-2)",
-                  margin: 0,
-                }}
-              >
+              <p className="cs-landing-sub">
                 Give us a DNA sample from the tumor and a matched healthy sample.
                 We&apos;ll walk you through every step — from raw files to a
                 shortlist of mutations your vaccine can target. No command line.
                 Works for people, dogs, and cats. Nothing leaves your computer.
               </p>
 
-              <div
-                style={{
-                  display: "flex",
-                  gap: 12,
-                  marginTop: 28,
-                  flexWrap: "wrap",
-                }}
-              >
+              <div className="cs-landing-ctas">
                 {firstWorkspace ? (
                   <Link
                     href={`/workspaces/${firstWorkspace.id}`}
@@ -90,14 +64,7 @@ export default async function Home() {
                 </Link>
               </div>
 
-              <div
-                style={{
-                  display: "flex",
-                  gap: 22,
-                  marginTop: 28,
-                  flexWrap: "wrap",
-                }}
-              >
+              <div className="cs-landing-stats">
                 <Stat
                   label="Species supported"
                   value="3"
@@ -116,26 +83,13 @@ export default async function Home() {
               </div>
             </div>
 
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "center",
-                alignItems: "center",
-              }}
-            >
+            <div className="cs-landing-helix">
               <Helix size={320} rungs={24} hue={152} speed={28} />
             </div>
           </div>
         </section>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: 20,
-            marginTop: 28,
-          }}
-        >
+        <div className="cs-landing-cards">
           <Card>
             <CardHead
               eyebrow="Open"

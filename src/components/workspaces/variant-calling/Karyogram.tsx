@@ -41,12 +41,20 @@ function densityDots(track: ChromosomeMetricsEntry) {
   return out;
 }
 
+function isCanonicalChromosome(name: string) {
+  const stripped = name.toLowerCase().startsWith("chr") ? name.slice(3) : name;
+  if (/^\d+$/.test(stripped)) return true;
+  return ["x", "y", "m", "mt"].includes(stripped.toLowerCase());
+}
+
 export default function Karyogram({
   chromosomes,
   topVariants,
   referenceLabel,
 }: KaryogramProps) {
-  if (!chromosomes.length) return null;
+  const canonical = chromosomes.filter((c) => isCanonicalChromosome(c.chromosome));
+  const tracks = canonical.length ? canonical : chromosomes;
+  if (!tracks.length) return null;
 
   const TRACK_H = 12;
   const SPACING = 5;
@@ -55,8 +63,8 @@ export default function Karyogram({
   const PAD_Y = 20;
   const W = 960;
   const trackInner = W - LABEL_W - RIGHT_G;
-  const H = PAD_Y * 2 + chromosomes.length * (TRACK_H + SPACING);
-  const maxLen = Math.max(...chromosomes.map((c) => c.length || 1));
+  const H = PAD_Y * 2 + tracks.length * (TRACK_H + SPACING);
+  const maxLen = Math.max(...tracks.map((c) => c.length || 1));
 
   const varsByChrom = new Map<string, TopVariantEntry[]>();
   for (const v of topVariants) {
@@ -67,6 +75,10 @@ export default function Karyogram({
 
   const totalVariants = chromosomes.reduce((a, c) => a + c.total, 0);
   const passCount = chromosomes.reduce((a, c) => a + c.passCount, 0);
+  const hiddenContigCount = chromosomes.length - tracks.length;
+  const hiddenVariantCount = chromosomes
+    .filter((c) => !isCanonicalChromosome(c.chromosome))
+    .reduce((a, c) => a + c.total, 0);
 
   return (
     <div className="cs-karyo">
@@ -152,7 +164,7 @@ export default function Karyogram({
             <stop offset="1" stopColor="#253355" stopOpacity="0.6" />
           </linearGradient>
         </defs>
-        {chromosomes.map((t, i) => {
+        {tracks.map((t, i) => {
           const y = PAD_Y + i * (TRACK_H + SPACING);
           const w = ((t.length || 1) / maxLen) * trackInner;
           const cy = y + TRACK_H / 2;
@@ -255,6 +267,20 @@ export default function Karyogram({
           1px ≈ {Math.round(maxLen / trackInner).toLocaleString()} bp
         </span>
       </div>
+      {hiddenContigCount > 0 ? (
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 11,
+            color: "#58677a",
+            fontFamily: "var(--font-mono)",
+            letterSpacing: "0.12em",
+          }}
+        >
+          + {hiddenVariantCount.toLocaleString()} on{" "}
+          {hiddenContigCount.toLocaleString()} unplaced contigs (not shown)
+        </div>
+      ) : null}
     </div>
   );
 }
