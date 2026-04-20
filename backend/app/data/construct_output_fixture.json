@@ -1,0 +1,64 @@
+{
+  "version": "v1.0.0",
+  "species_labels": {
+    "human": "Homo sapiens",
+    "dog": "Canis familiaris",
+    "cat": "Felis catus"
+  },
+  "cmo_options": [
+    {
+      "id": "twist",
+      "name": "Twist Bioscience",
+      "type": "DNA template",
+      "tat": "7 business days",
+      "cost": "$420",
+      "good": ["fastest turnaround", "reliable for <3 kb", "no minimum order"]
+    },
+    {
+      "id": "aldevron",
+      "name": "Aldevron",
+      "type": "GMP-grade mRNA",
+      "tat": "14 business days",
+      "cost": "$2,800",
+      "good": ["GMP-grade output", "QC included", "clinical history"]
+    },
+    {
+      "id": "trilink",
+      "name": "TriLink",
+      "type": "Capped mRNA",
+      "tat": "10 business days",
+      "cost": "$1,950",
+      "good": ["proprietary CleanCap AG", "LNP-ready output", "strong for personalized"]
+    }
+  ],
+  "dosing_protocol": {
+    "formulation": "LNP-encapsulated mRNA · ~100 nm particles",
+    "route": "Intramuscular (IM) · alternating thigh",
+    "dose": "25 µg mRNA per injection",
+    "schedule": [
+      { "when": "Week 0",     "label": "Prime",       "what": "First dose + baseline bloods" },
+      { "when": "Week 1",     "label": "Boost 1",     "what": "Second dose · monitor 30 min post" },
+      { "when": "Week 2",     "label": "Boost 2",     "what": "Third dose · immune profile" },
+      { "when": "Week 6",     "label": "Boost 3",     "what": "Fourth dose · response check" },
+      { "when": "Week 12",    "label": "Boost 4",     "what": "Re-imaging + ctDNA" },
+      { "when": "Every 3 mo.", "label": "Maintenance", "what": "Ongoing booster schedule" }
+    ],
+    "watch_for": [
+      "Mild injection-site swelling (expected)",
+      "Transient fever 24-48h post-dose",
+      "Report: persistent lethargy, appetite loss, GI signs"
+    ]
+  },
+  "audit_trail_template": [
+    { "stage": "01", "who": "pipeline", "what": "Ingested tumor + normal FASTQ",                           "kind": "auto"  },
+    { "stage": "02", "who": "pipeline", "what": "Aligned to reference with strobealign",                   "kind": "auto"  },
+    { "stage": "03", "who": "pipeline", "what": "Called variants with Mutect2",                            "kind": "auto"  },
+    { "stage": "04", "who": "pipeline", "what": "Annotated with Ensembl VEP",                              "kind": "auto"  },
+    { "stage": "05", "who": "pipeline", "what": "Predicted binders with NetMHCpan-4.2",                    "kind": "auto"  },
+    { "stage": "06", "who": "operator", "what": "Shortlisted peptides for the vaccine cassette",           "kind": "human" },
+    { "stage": "06", "who": "operator", "what": "Cleared safety review on the shortlist",                  "kind": "human" },
+    { "stage": "07", "who": "operator", "what": "Tuned LinearDesign lambda",                               "kind": "human" },
+    { "stage": "07", "who": "pipeline", "what": "DNAchisel manufacturing checks passed",                   "kind": "auto"  },
+    { "stage": "07", "who": "operator", "what": "Locked construct sequence",                               "kind": "human" }
+  ]
+}

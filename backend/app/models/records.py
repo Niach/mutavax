@@ -18,6 +18,8 @@ class WorkspaceRecord(Base):
     active_stage: Mapped[str] = mapped_column(String(64), nullable=False)
     neoantigen_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     epitope_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    construct_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    construct_output_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

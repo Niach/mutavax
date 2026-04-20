@@ -5,6 +5,10 @@ from app.models.schemas import (
     ActiveStageUpdateRequest,
     AlignmentStageSummaryResponse,
     AnnotationStageSummaryResponse,
+    ConstructDesignUpdate,
+    ConstructOutputAction,
+    ConstructOutputStageSummaryResponse,
+    ConstructStageSummaryResponse,
     GeneDomainsResponse,
     IngestionLanePreviewResponse,
     LocalFileRegistrationRequest,
@@ -63,6 +67,14 @@ from app.services.neoantigen import (
 from app.services.epitope_selection import (
     load_epitope_stage_summary,
     update_epitope_selection,
+)
+from app.services.construct_design import (
+    load_construct_stage_summary,
+    update_construct_options,
+)
+from app.services.construct_output import (
+    load_construct_output_summary,
+    update_construct_output,
 )
 from app.services.tool_preflight import (
     ALIGNMENT_TOOLS,
@@ -683,6 +695,80 @@ async def update_epitope_selection_route(
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
         raise unexpected_workspace_error("Epitope selection update", error) from error
+
+
+# ----------------------------------------------------------------------------- #
+# Stage 7 — mRNA construct design
+# ----------------------------------------------------------------------------- #
+
+
+@router.get(
+    "/{workspace_id}/construct",
+    response_model=ConstructStageSummaryResponse,
+)
+async def get_construct_stage_summary(workspace_id: str):
+    try:
+        return load_construct_stage_summary(workspace_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Construct summary load", error) from error
+
+
+@router.put(
+    "/{workspace_id}/construct/options",
+    response_model=ConstructStageSummaryResponse,
+)
+async def update_construct_options_route(
+    workspace_id: str, request: ConstructDesignUpdate
+):
+    try:
+        return update_construct_options(workspace_id, request)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Construct options update", error) from error
+
+
+# ----------------------------------------------------------------------------- #
+# Stage 8 — Construct output
+# ----------------------------------------------------------------------------- #
+
+
+@router.get(
+    "/{workspace_id}/construct-output",
+    response_model=ConstructOutputStageSummaryResponse,
+)
+async def get_construct_output_summary(workspace_id: str):
+    try:
+        return load_construct_output_summary(workspace_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Construct output load", error) from error
+
+
+@router.post(
+    "/{workspace_id}/construct-output/action",
+    response_model=ConstructOutputStageSummaryResponse,
+)
+async def update_construct_output_route(
+    workspace_id: str, request: ConstructOutputAction
+):
+    try:
+        return update_construct_output(workspace_id, request)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("Construct output update", error) from error
 
 
 @router.get(

@@ -1,0 +1,53 @@
+{
+  "flanks": {
+    "signal": {
+      "name": "Signal peptide (tPA)",
+      "short_name": "SP",
+      "aa": "MDAMKRGLCCVLLLCGAVFVSPS",
+      "why": "Routes the peptides into the secretory pathway so they end up on MHC."
+    },
+    "mitd": {
+      "name": "MITD trafficking domain",
+      "short_name": "MITD",
+      "aa": "IVGIVAGLAVLAVVVIGAVVATVMCRRKSSGGKGGSYSQAASSDSAQGSDVSLTA",
+      "why": "Shuttles the peptides into late endosomes so both MHC-I and MHC-II load efficiently."
+    },
+    "kozak": "GCCACCATGG",
+    "utr5": "GGGAAATAAGAGAGAAAAGAAGAGTAAGAAGAAATATAAGAGCCACC",
+    "utr3": "GCTGGAGCCTCGGTGGCCATGCTTCTTGCCCCTTGGGCCTCCCCCCAGCCCCTCCTCCCCTTCCTGCACCCGTACCCCCGTGGTCTTTGAATAAAGTCTGAGTGGGCGGC",
+    "poly_a_len": 120
+  },
+  "linkers": {
+    "classI": "AAY",
+    "classII": "GPGPG",
+    "hinge": "GGSGGGGSGG"
+  },
+  "codon_unopt": {
+    "A": "GCA", "R": "AGG", "N": "AAT", "D": "GAT", "C": "TGT",
+    "Q": "CAA", "E": "GAA", "G": "GGA", "H": "CAT", "I": "ATA",
+    "L": "TTA", "K": "AAA", "M": "ATG", "F": "TTT", "P": "CCA",
+    "S": "TCA", "T": "ACA", "W": "TGG", "Y": "TAT", "V": "GTA"
+  },
+  "codon_opt": {
+    "A": "GCC", "R": "CGG", "N": "AAC", "D": "GAC", "C": "TGC",
+    "Q": "CAG", "E": "GAG", "G": "GGC", "H": "CAC", "I": "ATC",
+    "L": "CTG", "K": "AAG", "M": "ATG", "F": "TTC", "P": "CCC",
+    "S": "AGC", "T": "ACC", "W": "TGG", "Y": "TAC", "V": "GTG"
+  },
+  "preview_peptide": {
+    "aa": "NIIQLLFMGH",
+    "unopt_nt": "AATATAATACAATTATTATTTATGGGACAT",
+    "opt_nt": "AACATCATCCAGCTGCTGTTCATGGGCCAC",
+    "gene": "KIT",
+    "mut": "p.Asn816Ile"
+  },
+  "manufacturing_checks": [
+    { "id": "bsai",   "label": "No BsaI cut sites",                    "why": "keeps cloning assembly clean",              "status": "pass" },
+    { "id": "bsmbi",  "label": "No BsmBI cut sites",                   "why": "keeps cloning assembly clean",              "status": "pass" },
+    { "id": "homop",  "label": "No 7+ homopolymer runs",               "why": "synthesizers skip long A/T/G/C runs",       "status": "pass" },
+    { "id": "gc",     "label": "GC 30-70% in every 50-nt window",      "why": "Twist/IDT synthesis requirement",           "status": "pass" },
+    { "id": "hairp",  "label": "No strong hairpins at 5' end",         "why": "lets ribosomes initiate",                   "status": "pass" },
+    { "id": "repeat", "label": "No direct repeats >= 15 nt",           "why": "stops recombination during scale-up",       "status": "pass" },
+    { "id": "furin",  "label": "No accidental furin sites",            "why": "prevents protease clipping in the cell",    "status": "pass" }
+  ]
+}

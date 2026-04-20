@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 
 import AlignmentStagePanel from "@/components/workspaces/AlignmentStagePanel";
 import AnnotationStagePanel from "@/components/workspaces/AnnotationStagePanel";
+import ConstructDesignStagePanel from "@/components/workspaces/ConstructDesignStagePanel";
+import ConstructOutputStagePanel from "@/components/workspaces/ConstructOutputStagePanel";
 import EpitopeSelectionStagePanel from "@/components/workspaces/EpitopeSelectionStagePanel";
 import IngestionStagePanel from "@/components/workspaces/IngestionStagePanel";
 import NeoantigenPredictionStagePanel from "@/components/workspaces/NeoantigenPredictionStagePanel";
@@ -21,6 +23,8 @@ import {
 import type {
   AlignmentStageSummary,
   AnnotationStageSummary,
+  ConstructOutputStageSummary,
+  ConstructStageSummary,
   EpitopeStageSummary,
   NeoantigenStageSummary,
   PipelineStageId,
@@ -45,6 +49,8 @@ interface WorkspaceStageShellProps {
   initialAnnotationSummary: AnnotationStageSummary;
   initialNeoantigenSummary: NeoantigenStageSummary;
   initialEpitopeSummary: EpitopeStageSummary;
+  initialConstructSummary: ConstructStageSummary;
+  initialConstructOutputSummary: ConstructOutputStageSummary;
   redirectedFromStageId: PipelineStageId | null;
 }
 
@@ -57,6 +63,8 @@ export default function WorkspaceStageShell({
   initialAnnotationSummary,
   initialNeoantigenSummary,
   initialEpitopeSummary,
+  initialConstructSummary,
+  initialConstructOutputSummary,
   redirectedFromStageId,
 }: WorkspaceStageShellProps) {
   const [workspace, setWorkspace] = useState(initialWorkspace);
@@ -78,6 +86,12 @@ export default function WorkspaceStageShell({
   const [epitopeSummary, setEpitopeSummary] = useState(
     initialEpitopeSummary
   );
+  const [constructSummary, setConstructSummary] = useState(
+    initialConstructSummary
+  );
+  const [constructOutputSummary, setConstructOutputSummary] = useState(
+    initialConstructOutputSummary
+  );
   const { tweaks } = useTweaks();
 
   const stagePolicy = getPipelinePolicy(
@@ -86,7 +100,9 @@ export default function WorkspaceStageShell({
     variantCallingSummary,
     annotationSummary,
     neoantigenSummary,
-    epitopeSummary
+    epitopeSummary,
+    constructSummary,
+    constructOutputSummary
   );
   const currentStagePolicy = stagePolicy[currentStageId];
   const primaryStages = getVisiblePrimaryStages(stagePolicy);
@@ -340,6 +356,20 @@ export default function WorkspaceStageShell({
                 workspace={workspace}
                 initialSummary={epitopeSummary}
                 onSummaryChange={setEpitopeSummary}
+              />
+            ) : currentStageId === "construct-design" ? (
+              <ConstructDesignStagePanel
+                key={workspace.id}
+                workspace={workspace}
+                initialSummary={constructSummary}
+                onSummaryChange={setConstructSummary}
+              />
+            ) : currentStageId === "construct-output" ? (
+              <ConstructOutputStagePanel
+                key={workspace.id}
+                workspace={workspace}
+                initialSummary={constructOutputSummary}
+                onSummaryChange={setConstructOutputSummary}
               />
             ) : null}
           </div>

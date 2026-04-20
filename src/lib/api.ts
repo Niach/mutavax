@@ -60,6 +60,22 @@ import type {
   EpitopeSafetyFlag,
   EpitopeStageStatus,
   EpitopeStageSummary,
+  ConstructDesignStatus,
+  ConstructFlanks,
+  ConstructManufacturingCheck,
+  ConstructMetrics,
+  ConstructPreview,
+  ConstructPreviewCodon,
+  ConstructSegment,
+  ConstructSegmentKind,
+  ConstructStageSummary,
+  ConstructOutputRun,
+  ConstructOutputStageSummary,
+  ConstructOutputStatus,
+  ConstructRunKind,
+  CmoOption,
+  DosingScheduleItem,
+  AuditEntry,
   PatientAllele,
   BindingBucket,
   BindingTier,
@@ -1274,6 +1290,292 @@ function mapEpitopeStageSummary(
   };
 }
 
+// --- Stage 7 — mRNA construct design ----------------------------------------
+
+type ConstructDesignOptionsDto = {
+  lambda: number;
+  signal: boolean;
+  mitd: boolean;
+  confirmed: boolean;
+};
+
+type ConstructSegmentDto = {
+  kind: ConstructSegmentKind;
+  label: string;
+  sub?: string | null;
+  aa: string;
+  class?: MhcClass | null;
+  peptide_id?: string | null;
+  color?: string | null;
+};
+
+type ConstructFlanksDto = {
+  kozak: string;
+  utr5: string;
+  utr3: string;
+  poly_a: number;
+  signal_aa: string;
+  mitd_aa: string;
+  signal_why: string;
+  mitd_why: string;
+};
+
+type ConstructMetricsDto = {
+  aa_len: number;
+  nt_len: number;
+  cai: number;
+  mfe: number;
+  gc: number;
+  full_mrna_nt: number;
+  mfe_per_nt: number;
+};
+
+type ConstructManufacturingCheckDto = {
+  id: string;
+  label: string;
+  why: string;
+  status: "pass" | "warn" | "fail";
+};
+
+type ConstructPreviewCodonDto = {
+  aa: string;
+  unopt: string;
+  opt: string;
+  swapped: boolean;
+};
+
+type ConstructPreviewDto = {
+  gene: string;
+  mut: string;
+  codons: ConstructPreviewCodonDto[];
+};
+
+type ConstructStageSummaryDto = {
+  workspace_id: string;
+  status: ConstructDesignStatus;
+  blocking_reason?: string | null;
+  options: ConstructDesignOptionsDto;
+  flanks: ConstructFlanksDto;
+  linkers: Record<string, string>;
+  segments: ConstructSegmentDto[];
+  aa_seq: string;
+  metrics: ConstructMetricsDto;
+  preview: ConstructPreviewDto;
+  manufacturing_checks: ConstructManufacturingCheckDto[];
+  peptide_count: number;
+  ready_for_output: boolean;
+};
+
+function mapConstructSegment(dto: ConstructSegmentDto): ConstructSegment {
+  return {
+    kind: dto.kind,
+    label: dto.label,
+    sub: dto.sub ?? null,
+    aa: dto.aa,
+    class: (dto.class ?? null) as MhcClass | null,
+    peptideId: dto.peptide_id ?? null,
+    color: dto.color ?? null,
+  };
+}
+
+function mapConstructFlanks(dto: ConstructFlanksDto): ConstructFlanks {
+  return {
+    kozak: dto.kozak,
+    utr5: dto.utr5,
+    utr3: dto.utr3,
+    polyA: dto.poly_a,
+    signalAa: dto.signal_aa,
+    mitdAa: dto.mitd_aa,
+    signalWhy: dto.signal_why,
+    mitdWhy: dto.mitd_why,
+  };
+}
+
+function mapConstructMetrics(dto: ConstructMetricsDto): ConstructMetrics {
+  return {
+    aaLen: dto.aa_len,
+    ntLen: dto.nt_len,
+    cai: dto.cai,
+    mfe: dto.mfe,
+    gc: dto.gc,
+    fullMrnaNt: dto.full_mrna_nt,
+    mfePerNt: dto.mfe_per_nt,
+  };
+}
+
+function mapConstructPreview(dto: ConstructPreviewDto): ConstructPreview {
+  return {
+    gene: dto.gene,
+    mut: dto.mut,
+    codons: (dto.codons ?? []).map(
+      (c): ConstructPreviewCodon => ({
+        aa: c.aa,
+        unopt: c.unopt,
+        opt: c.opt,
+        swapped: c.swapped,
+      })
+    ),
+  };
+}
+
+function mapConstructStageSummary(
+  dto: ConstructStageSummaryDto
+): ConstructStageSummary {
+  return {
+    workspaceId: dto.workspace_id,
+    status: dto.status,
+    blockingReason: dto.blocking_reason ?? null,
+    options: {
+      lambda: dto.options.lambda,
+      signal: dto.options.signal,
+      mitd: dto.options.mitd,
+      confirmed: dto.options.confirmed,
+    },
+    flanks: mapConstructFlanks(dto.flanks),
+    linkers: dto.linkers ?? {},
+    segments: (dto.segments ?? []).map(mapConstructSegment),
+    aaSeq: dto.aa_seq,
+    metrics: mapConstructMetrics(dto.metrics),
+    preview: mapConstructPreview(dto.preview),
+    manufacturingChecks: (dto.manufacturing_checks ?? []).map(
+      (c): ConstructManufacturingCheck => ({
+        id: c.id,
+        label: c.label,
+        why: c.why,
+        status: c.status,
+      })
+    ),
+    peptideCount: dto.peptide_count,
+    readyForOutput: Boolean(dto.ready_for_output),
+  };
+}
+
+// --- Stage 8 — Construct output ---------------------------------------------
+
+type CmoOptionDto = {
+  id: string;
+  name: string;
+  type: string;
+  tat: string;
+  cost: string;
+  good: string[];
+};
+
+type DosingScheduleItemDto = {
+  when: string;
+  label: string;
+  what: string;
+};
+
+type DosingProtocolDto = {
+  formulation: string;
+  route: string;
+  dose: string;
+  schedule: DosingScheduleItemDto[];
+  watch_for: string[];
+};
+
+type AuditEntryDto = {
+  stage: string;
+  when: string;
+  who: string;
+  what: string;
+  kind: "auto" | "human";
+};
+
+type ConstructOutputRunDto = {
+  kind: ConstructRunKind;
+  label: string;
+  nt: string;
+};
+
+type ConstructOutputOrderDto = {
+  cmo_id: string;
+  po_number: string;
+  ordered_at: string;
+};
+
+type ConstructOutputStageSummaryDto = {
+  workspace_id: string;
+  status: ConstructOutputStatus;
+  blocking_reason?: string | null;
+  construct_id: string;
+  species: string;
+  version: string;
+  checksum: string;
+  released_at?: string | null;
+  released_by?: string | null;
+  runs: ConstructOutputRunDto[];
+  full_nt: string;
+  total_nt: number;
+  cmo_options: CmoOptionDto[];
+  selected_cmo?: string | null;
+  order?: ConstructOutputOrderDto | null;
+  dosing: DosingProtocolDto;
+  audit_trail: AuditEntryDto[];
+};
+
+function mapConstructOutputStageSummary(
+  dto: ConstructOutputStageSummaryDto
+): ConstructOutputStageSummary {
+  return {
+    workspaceId: dto.workspace_id,
+    status: dto.status,
+    blockingReason: dto.blocking_reason ?? null,
+    constructId: dto.construct_id,
+    species: dto.species,
+    version: dto.version,
+    checksum: dto.checksum,
+    releasedAt: dto.released_at ?? null,
+    releasedBy: dto.released_by ?? null,
+    runs: (dto.runs ?? []).map(
+      (r): ConstructOutputRun => ({ kind: r.kind, label: r.label, nt: r.nt })
+    ),
+    fullNt: dto.full_nt,
+    totalNt: dto.total_nt,
+    cmoOptions: (dto.cmo_options ?? []).map(
+      (o): CmoOption => ({
+        id: o.id,
+        name: o.name,
+        type: o.type,
+        tat: o.tat,
+        cost: o.cost,
+        good: o.good ?? [],
+      })
+    ),
+    selectedCmo: dto.selected_cmo ?? null,
+    order: dto.order
+      ? {
+          cmoId: dto.order.cmo_id,
+          poNumber: dto.order.po_number,
+          orderedAt: dto.order.ordered_at,
+        }
+      : null,
+    dosing: {
+      formulation: dto.dosing.formulation,
+      route: dto.dosing.route,
+      dose: dto.dosing.dose,
+      schedule: (dto.dosing.schedule ?? []).map(
+        (s): DosingScheduleItem => ({
+          when: s.when,
+          label: s.label,
+          what: s.what,
+        })
+      ),
+      watchFor: dto.dosing.watch_for ?? [],
+    },
+    auditTrail: (dto.audit_trail ?? []).map(
+      (e): AuditEntry => ({
+        stage: e.stage,
+        when: e.when,
+        who: e.who,
+        what: e.what,
+        kind: e.kind,
+      })
+    ),
+  };
+}
+
 function mapVariantCallingStageSummary(
   dto: VariantCallingStageSummaryDto
 ): VariantCallingStageSummary {
@@ -1918,6 +2220,54 @@ export const api = {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ peptide_ids: peptideIds }),
+        }
+      )
+    ),
+  getConstructStageSummary: async (workspaceId: string) =>
+    mapConstructStageSummary(
+      await request<ConstructStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/construct`
+      )
+    ),
+  updateConstructOptions: async (
+    workspaceId: string,
+    options: { lambda: number; signal: boolean; mitd: boolean; confirmed: boolean }
+  ) =>
+    mapConstructStageSummary(
+      await request<ConstructStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/construct/options`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lambda: options.lambda,
+            signal: options.signal,
+            mitd: options.mitd,
+            confirmed: options.confirmed,
+          }),
+        }
+      )
+    ),
+  getConstructOutputSummary: async (workspaceId: string) =>
+    mapConstructOutputStageSummary(
+      await request<ConstructOutputStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/construct-output`
+      )
+    ),
+  updateConstructOutput: async (
+    workspaceId: string,
+    payload: { action: "select_cmo" | "release"; cmoId?: string | null }
+  ) =>
+    mapConstructOutputStageSummary(
+      await request<ConstructOutputStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/construct-output/action`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: payload.action,
+            cmo_id: payload.cmoId ?? null,
+          }),
         }
       )
     ),

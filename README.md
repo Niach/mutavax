@@ -10,9 +10,9 @@ Sample your DNA. Compute your cure. cancerstudio designs a personalized mRNA vac
 | --- | --- | --- | --- | --- |
 | ![landing](docs/screenshots/landing.png) | ![ingestion](docs/screenshots/ingestion.png) | ![alignment](docs/screenshots/alignment.png) | ![variant calling](docs/screenshots/variant-calling.png) | ![annotation](docs/screenshots/annotation.png) |
 
-| Score the neoantigens | Curate the cassette | | | |
+| Score the neoantigens | Curate the cassette | Design the construct | Hand off the vaccine | |
 | --- | --- | --- | --- | --- |
-| ![neoantigen prediction](docs/screenshots/neoantigen.png) | ![epitope selection](docs/screenshots/epitope-selection.png) | | | |
+| ![neoantigen prediction](docs/screenshots/neoantigen.png) | ![epitope selection](docs/screenshots/epitope-selection.png) | ![mRNA construct design](docs/screenshots/construct-design.png) | ![construct output](docs/screenshots/construct-output.png) | |
 
 ## Sample. Compute. Cure.
 
@@ -32,8 +32,8 @@ Sample your DNA. Compute your cure. cancerstudio designs a personalized mRNA vac
 | 4 | Annotation | **Live** — cancer-gene cards + lollipop plot | Ensembl VEP 111 |
 | 5 | Neoantigen Prediction | **Live** — binding buckets + peptide × allele heatmap + antigen funnel | pVACseq 5.4.0, NetMHCpan 4.2, NetMHCIIpan 4.3 |
 | 6 | Epitope Selection | **Live** — 8-slot cassette curation UI | pVACview + custom scoring |
-| 7 | mRNA Construct Design | Planned | LinearDesign, DNAchisel |
-| 8 | Construct Output | Planned | pVACvector, Biopython |
+| 7 | mRNA Construct Design | **Live** — molecule hero + λ slider trading CAI vs. MFE + codon swap preview + 7/7 manufacturability checks | LinearDesign, DNAchisel, ViennaRNA |
+| 8 | Construct Output | **Live** — color-coded FASTA with FASTA/GenBank/JSON downloads, CMO release flow, vet dosing, audit trail | pVACvector, Biopython |
 
 Every live stage is pause-and-resumable. Progress is surfaced honestly, tool names live in the expert drawer.
 
@@ -161,7 +161,14 @@ python3 scripts/fetch_canine_dlbcl_sample_data.py --mode full  # full DLBCL1 pai
 Regenerate the screenshots in this README (frontend + backend must be running):
 
 ```bash
-node scripts/take-screenshots.mjs
+# Stages 1–5 need a real completed pipeline run; point the script at that workspace.
+node scripts/take-screenshots.mjs <workspace-id>
+
+# Stages 6–8 can be captured from a synthetic demo workspace that skips the heavy
+# bioinformatics (inserts minimum DB stubs only — not suitable for any real run).
+docker cp scripts/seed_demo_workspace.py cancerstudio-backend:/tmp/seed.py
+WORKSPACE_ID=$(docker exec cancerstudio-backend python /tmp/seed.py)
+node scripts/take-screenshots.mjs --stages=6,7,8 "$WORKSPACE_ID"
 ```
 
 Local overrides live in `.env` — see `.env.example` for the full list. The common ones:

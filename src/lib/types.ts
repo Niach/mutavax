@@ -780,6 +780,164 @@ export interface EpitopeStageSummary {
   readyForConstructDesign: boolean;
 }
 
+// --- Stage 7 — mRNA construct design ----------------------------------------
+
+export type ConstructDesignStatus = "blocked" | "scaffolded" | "confirmed";
+
+export type ConstructSegmentKind = "signal" | "linker" | "peptide" | "mitd";
+
+export interface ConstructDesignOptions {
+  lambda: number;
+  signal: boolean;
+  mitd: boolean;
+  confirmed: boolean;
+}
+
+export interface ConstructSegment {
+  kind: ConstructSegmentKind;
+  label: string;
+  sub?: string | null;
+  aa: string;
+  class?: MhcClass | null;
+  peptideId?: string | null;
+  color?: string | null;
+}
+
+export interface ConstructFlanks {
+  kozak: string;
+  utr5: string;
+  utr3: string;
+  polyA: number;
+  signalAa: string;
+  mitdAa: string;
+  signalWhy: string;
+  mitdWhy: string;
+}
+
+export interface ConstructMetrics {
+  aaLen: number;
+  ntLen: number;
+  cai: number;
+  mfe: number;
+  gc: number;
+  fullMrnaNt: number;
+  mfePerNt: number;
+}
+
+export interface ConstructManufacturingCheck {
+  id: string;
+  label: string;
+  why: string;
+  status: "pass" | "warn" | "fail";
+}
+
+export interface ConstructPreviewCodon {
+  aa: string;
+  unopt: string;
+  opt: string;
+  swapped: boolean;
+}
+
+export interface ConstructPreview {
+  gene: string;
+  mut: string;
+  codons: ConstructPreviewCodon[];
+}
+
+export interface ConstructStageSummary {
+  workspaceId: string;
+  status: ConstructDesignStatus;
+  blockingReason?: string | null;
+  options: ConstructDesignOptions;
+  flanks: ConstructFlanks;
+  linkers: Record<string, string>;
+  segments: ConstructSegment[];
+  aaSeq: string;
+  metrics: ConstructMetrics;
+  preview: ConstructPreview;
+  manufacturingChecks: ConstructManufacturingCheck[];
+  peptideCount: number;
+  readyForOutput: boolean;
+}
+
+// --- Stage 8 — Construct output ---------------------------------------------
+
+export type ConstructOutputStatus = "blocked" | "ready" | "released";
+
+export type ConstructRunKind =
+  | "utr5"
+  | "signal"
+  | "linker"
+  | "classI"
+  | "classII"
+  | "mitd"
+  | "stop"
+  | "utr3"
+  | "polyA";
+
+export interface ConstructOutputRun {
+  kind: ConstructRunKind;
+  label: string;
+  nt: string;
+}
+
+export interface CmoOption {
+  id: string;
+  name: string;
+  type: string;
+  tat: string;
+  cost: string;
+  good: string[];
+}
+
+export interface DosingScheduleItem {
+  when: string;
+  label: string;
+  what: string;
+}
+
+export interface DosingProtocol {
+  formulation: string;
+  route: string;
+  dose: string;
+  schedule: DosingScheduleItem[];
+  watchFor: string[];
+}
+
+export interface AuditEntry {
+  stage: string;
+  when: string;
+  who: string;
+  what: string;
+  kind: "auto" | "human";
+}
+
+export interface ConstructOutputOrder {
+  cmoId: string;
+  poNumber: string;
+  orderedAt: string;
+}
+
+export interface ConstructOutputStageSummary {
+  workspaceId: string;
+  status: ConstructOutputStatus;
+  blockingReason?: string | null;
+  constructId: string;
+  species: string;
+  version: string;
+  checksum: string;
+  releasedAt?: string | null;
+  releasedBy?: string | null;
+  runs: ConstructOutputRun[];
+  fullNt: string;
+  totalNt: number;
+  cmoOptions: CmoOption[];
+  selectedCmo?: string | null;
+  order?: ConstructOutputOrder | null;
+  dosing: DosingProtocol;
+  auditTrail: AuditEntry[];
+}
+
 export interface VaccineConstruct {
   id: string;
   name: string;
@@ -856,7 +1014,7 @@ export const PIPELINE_STAGES: PipelineStage[] = [
     description: "Optimize codons, UTRs, and secondary structure",
     icon: "Dna",
     tools: ["LinearDesign", "DNAchisel", "ViennaRNA"],
-    implementationState: "planned",
+    implementationState: "live",
     group: "primary",
   },
   {
@@ -874,7 +1032,7 @@ export const PIPELINE_STAGES: PipelineStage[] = [
     description: "Generate final mRNA sequence for synthesis",
     icon: "FileOutput",
     tools: ["pVACvector", "Biopython"],
-    implementationState: "planned",
+    implementationState: "live",
     group: "primary",
   },
   {

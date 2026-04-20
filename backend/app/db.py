@@ -183,6 +183,18 @@ def _ensure_schema_updates() -> None:
         "epitope_config",
         "TEXT",
     )
+    _ensure_column(
+        inspector,
+        "workspaces",
+        "construct_config",
+        "TEXT",
+    )
+    _ensure_column(
+        inspector,
+        "workspaces",
+        "construct_output_config",
+        "TEXT",
+    )
     _ensure_workspace_file_storage_key_not_unique()
 
 

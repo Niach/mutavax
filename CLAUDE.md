@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A desktop-first pipeline for designing personalized mRNA cancer vaccines. You provide two DNA samples (tumor + normal) by pointing the app at local sequencing files, and the product guides you through intake, alignment, variant calling, annotation, neoantigen prediction, and epitope curation today, with the downstream mRNA-construct and construct-output work kept as roadmap stages.
+A desktop-first pipeline for designing personalized mRNA cancer vaccines. You provide two DNA samples (tumor + normal) by pointing the app at local sequencing files, and the product guides you through intake, alignment, variant calling, annotation, neoantigen prediction, epitope curation, mRNA construct design, and the final FASTA handoff to a manufacturer.
 
 Supports multiple species: human, dog, and cat. The canine case came first, but the architecture is species-flexible.
 
@@ -22,8 +22,8 @@ Inspired by Paul Conyngham's work creating a personalized mRNA vaccine for his d
 | 4 | Annotation | **Live** | Ensembl VEP 111 | Runs VEP against a species-specific offline cache with the pVACseq-ready Frameshift/Wildtype/Downstream plugins; renders cancer-gene cards, a lollipop plot of the top gene, plain-English impact tiles, a consequence donut, and a filterable annotated-variants table |
 | 5 | Neoantigen Prediction | **Live** | pVACseq, NetMHCpan-4.2 | Runs pVACseq against the annotated VCF from stage 4 (class I on NetMHCpan 4.2, class II on NetMHCIIpan 4.3) and parses the output into binding buckets, a peptide × allele heatmap, a VAF/binding scatter, an antigen funnel, and a top-candidates table |
 | 6 | Epitope Selection | **Live** | pVACview curation, custom scoring | Curation UI on top of stage 5's candidates: 8-slot cassette, radial allele-coverage wheel, six plain-English goals checklist, filterable/sortable deck of peptides, selection summary; picks persist per workspace |
-| 7 | mRNA Construct Design | Planned | LinearDesign, DNAchisel, ViennaRNA | Optimize codons, UTRs, and secondary structure |
-| 8 | Construct Output | Planned | pVACvector, Biopython | Generate final annotated mRNA sequence |
+| 7 | mRNA Construct Design | **Live** | LinearDesign, DNAchisel, ViennaRNA | Wraps the stage-6 picks with a tPA signal peptide, AAY/GPGPG linkers, MITD trafficking tail, Kozak, 5′/3′ UTRs, and poly(A); λ slider trades CAI vs. MFE (curves + metric pills), SP/MITD toggles, wild-type→optimized codon swap preview, 7-check DNAchisel manufacturability pass, "Confirm & hand off" locks the design. Fixture-backed: real LinearDesign/ViennaRNA integration is still on the roadmap. |
+| 8 | Construct Output | **Live** | pVACvector, Biopython | Assembles the confirmed construct into a color-coded 60-char FASTA hero (+ mini ribbon), offers FASTA/GenBank/JSON downloads, CMO picker (Twist/Aldevron/TriLink) with release flow that stamps a deterministic sha256 checksum + PO number, vet dosing protocol, and decision-trail audit card |
 | 9 | Structure Prediction | Later | Boltz-2, ESMFold, Mol* | Research-only structural follow-up, outside the Paul-core v1 path |
 | 10 | AI Review | Later | Claude API, ESM-C | Research-only validation and optimization suggestions |
 

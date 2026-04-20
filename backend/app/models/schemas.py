@@ -876,3 +876,191 @@ class EpitopeStageSummaryResponse(BaseModel):
 
 class EpitopeSelectionUpdate(BaseModel):
     peptide_ids: List[str] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# Stage 7 — mRNA construct design
+# --------------------------------------------------------------------------- #
+
+
+class ConstructDesignStatus(str, Enum):
+    BLOCKED = "blocked"
+    SCAFFOLDED = "scaffolded"
+    CONFIRMED = "confirmed"
+
+
+ConstructSegmentKind = Literal["signal", "linker", "peptide", "mitd"]
+
+
+class ConstructDesignOptions(BaseModel):
+    lambda_value: float = Field(0.65, alias="lambda", ge=0.0, le=1.0)
+    signal: bool = True
+    mitd: bool = True
+    confirmed: bool = False
+
+    class Config:
+        populate_by_name = True
+
+
+class ConstructSegment(BaseModel):
+    kind: ConstructSegmentKind
+    label: str
+    sub: Optional[str] = None
+    aa: str
+    mhc_class: Optional[MhcClass] = Field(default=None, alias="class")
+    peptide_id: Optional[str] = None
+    color: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+
+
+class ConstructFlanks(BaseModel):
+    kozak: str
+    utr5: str
+    utr3: str
+    poly_a: int
+    signal_aa: str
+    mitd_aa: str
+    signal_why: str
+    mitd_why: str
+
+
+class ConstructMetrics(BaseModel):
+    aa_len: int
+    nt_len: int
+    cai: float
+    mfe: int
+    gc: float
+    full_mrna_nt: int
+    mfe_per_nt: float
+
+
+class ConstructManufacturingCheck(BaseModel):
+    id: str
+    label: str
+    why: str
+    status: Literal["pass", "warn", "fail"] = "pass"
+
+
+class ConstructPreviewCodon(BaseModel):
+    aa: str
+    unopt: str
+    opt: str
+    swapped: bool
+
+
+class ConstructPreview(BaseModel):
+    gene: str
+    mut: str
+    codons: List[ConstructPreviewCodon]
+
+
+class ConstructStageSummaryResponse(BaseModel):
+    workspace_id: str
+    status: ConstructDesignStatus
+    blocking_reason: Optional[str] = None
+    options: ConstructDesignOptions
+    flanks: ConstructFlanks
+    linkers: Dict[str, str]
+    segments: List[ConstructSegment]
+    aa_seq: str
+    metrics: ConstructMetrics
+    preview: ConstructPreview
+    manufacturing_checks: List[ConstructManufacturingCheck]
+    peptide_count: int
+    ready_for_output: bool
+
+
+class ConstructDesignUpdate(BaseModel):
+    lambda_value: float = Field(..., alias="lambda", ge=0.0, le=1.0)
+    signal: bool = True
+    mitd: bool = True
+    confirmed: bool = False
+
+    class Config:
+        populate_by_name = True
+
+
+# --------------------------------------------------------------------------- #
+# Stage 8 — Construct output
+# --------------------------------------------------------------------------- #
+
+
+class ConstructOutputStatus(str, Enum):
+    BLOCKED = "blocked"
+    READY = "ready"
+    RELEASED = "released"
+
+
+ConstructRunKind = Literal[
+    "utr5", "signal", "linker", "classI", "classII", "mitd", "stop", "utr3", "polyA"
+]
+
+
+class ConstructOutputRun(BaseModel):
+    kind: ConstructRunKind
+    label: str
+    nt: str
+
+
+class CmoOption(BaseModel):
+    id: str
+    name: str
+    type: str
+    tat: str
+    cost: str
+    good: List[str]
+
+
+class DosingScheduleItem(BaseModel):
+    when: str
+    label: str
+    what: str
+
+
+class DosingProtocol(BaseModel):
+    formulation: str
+    route: str
+    dose: str
+    schedule: List[DosingScheduleItem]
+    watch_for: List[str]
+
+
+class AuditEntry(BaseModel):
+    stage: str
+    when: str
+    who: str
+    what: str
+    kind: Literal["auto", "human"]
+
+
+class ConstructOutputOrder(BaseModel):
+    cmo_id: str
+    po_number: str
+    ordered_at: str
+
+
+class ConstructOutputStageSummaryResponse(BaseModel):
+    workspace_id: str
+    status: ConstructOutputStatus
+    blocking_reason: Optional[str] = None
+    construct_id: str
+    species: str
+    version: str
+    checksum: str
+    released_at: Optional[str] = None
+    released_by: Optional[str] = None
+    runs: List[ConstructOutputRun]
+    full_nt: str
+    total_nt: int
+    cmo_options: List[CmoOption]
+    selected_cmo: Optional[str] = None
+    order: Optional[ConstructOutputOrder] = None
+    dosing: DosingProtocol
+    audit_trail: List[AuditEntry]
+
+
+class ConstructOutputAction(BaseModel):
+    action: Literal["select_cmo", "release"]
+    cmo_id: Optional[str] = None

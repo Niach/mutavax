@@ -1,6 +1,8 @@
 import type {
   AlignmentStageSummary,
   AnnotationStageSummary,
+  ConstructOutputStageSummary,
+  ConstructStageSummary,
   EpitopeStageSummary,
   NeoantigenStageSummary,
   PipelineStage,
@@ -41,7 +43,9 @@ export function getPipelinePolicy(
   variantCallingSummary: VariantCallingStageSummary,
   annotationSummary?: AnnotationStageSummary | null,
   neoantigenSummary?: NeoantigenStageSummary | null,
-  epitopeSummary?: EpitopeStageSummary | null
+  epitopeSummary?: EpitopeStageSummary | null,
+  constructSummary?: ConstructStageSummary | null,
+  constructOutputSummary?: ConstructOutputStageSummary | null
 ): PipelinePolicyMap {
   const latestActionableStage =
     workspace.ingestion.readyForAlignment && alignmentSummary.status !== "blocked"
@@ -216,6 +220,48 @@ export function getPipelinePolicy(
           : isCompleted
             ? "The shortlist is ready for mRNA construct design."
             : "Shortlist the fragments the vaccine will carry.",
+      };
+      continue;
+    }
+
+    if (stage.id === "construct-design") {
+      const epitopeReady = epitopeSummary?.readyForConstructDesign ?? false;
+      const isConfirmed = constructSummary?.status === "confirmed";
+
+      policies[stage.id] = {
+        stage,
+        visible: true,
+        enterable: true,
+        actionable: epitopeReady,
+        blockedReason: !epitopeReady
+          ? "Lock the epitope shortlist before designing the construct."
+          : constructSummary?.blockingReason ?? null,
+        nextStep: !epitopeReady
+          ? "Finish epitope selection first."
+          : isConfirmed
+            ? "Construct is locked and ready to hand off."
+            : "Tune codon optimization, then confirm the design.",
+      };
+      continue;
+    }
+
+    if (stage.id === "construct-output") {
+      const designConfirmed = constructSummary?.status === "confirmed";
+      const released = constructOutputSummary?.status === "released";
+
+      policies[stage.id] = {
+        stage,
+        visible: true,
+        enterable: true,
+        actionable: designConfirmed,
+        blockedReason: !designConfirmed
+          ? "Confirm the construct design before generating the output."
+          : constructOutputSummary?.blockingReason ?? null,
+        nextStep: !designConfirmed
+          ? "Confirm the construct design first."
+          : released
+            ? "Construct has been released to the manufacturer."
+            : "Download the FASTA bundle and send for synthesis.",
       };
       continue;
     }
