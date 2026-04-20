@@ -18,11 +18,11 @@ Sample your DNA. Compute your cure. cancerstudio designs a personalized mRNA vac
 
 **Sample.** Sequence the tumor and a matched healthy sample at any standard lab. Two FASTQ files.
 
-**Compute.** Run cancerstudio on *your* machine. Eight guided stages compare tumor vs. healthy, find the cancer-specific *mutations*, and design the molecule. ≈6 hours on a workstation.
+**Compute.** Run cancerstudio on *your* machine. Eight guided stages compare tumor vs. healthy, find the cancer-specific *mutations*, and design the molecule. ≈12 hours on a workstation.
 
 **Cure.** Send the resulting FASTA to a GMP manufacturer. A vial arrives roughly ten days later.
 
-## Eight stages. Six hours. One molecule.
+## Eight stages. Twelve hours. One molecule.
 
 | # | Stage | State | Tools |
 | --- | --- | --- | --- |
