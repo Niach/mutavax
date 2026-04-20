@@ -399,6 +399,7 @@
   flex-direction: column;
   gap: 20px;
   z-index: 10;
+  overflow-y: auto;
 }
 
 .cs-brand {
@@ -685,6 +686,20 @@
   position: absolute; inset: 0 auto 0 0; width: 3px;
   background: var(--lane);
   opacity: 0.8;
+}
+
+/* ── Lane slot (ingestion intake) ── */
+.cs-slot {
+  border: 1.5px dashed color-mix(in oklch, var(--lane) 60%, transparent);
+  border-radius: var(--radius-cs);
+  padding: 14px 16px;
+  background: color-mix(in oklch, var(--lane-soft) 60%, transparent);
+  position: relative;
+}
+.cs-slot-filled {
+  border-style: solid;
+  border-color: color-mix(in oklch, var(--lane) 40%, var(--line));
+  background: var(--surface-strong);
 }
 
 /* ── Data table rows ── */
