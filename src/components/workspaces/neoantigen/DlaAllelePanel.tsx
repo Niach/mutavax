@@ -138,6 +138,12 @@ export default function DlaAllelePanel({
           )
         ) : null}
       </div>
+      <CoverageGapNote
+        rejectedAlleles={rejectedAlleles}
+        totalAlleles={alleles.length}
+        editing={editing}
+      />
+
       <div
         style={{
           padding: "0 22px 20px",
@@ -213,6 +219,77 @@ export default function DlaAllelePanel({
         </div>
       ) : null}
     </Card>
+  );
+}
+
+function CoverageGapNote({
+  rejectedAlleles,
+  totalAlleles,
+  editing,
+}: {
+  rejectedAlleles?: RejectedAllele[];
+  totalAlleles: number;
+  editing: boolean;
+}) {
+  const rejected = rejectedAlleles ?? [];
+  if (editing || rejected.length === 0) return null;
+
+  const classI = rejected.filter((r) => r.mhcClass === "I");
+  const classII = rejected.filter((r) => r.mhcClass === "II");
+  const parts: string[] = [];
+  if (classI.length > 0) {
+    parts.push(
+      `${classI.length} class I (${classI.map((r) => r.allele).join(", ")})`,
+    );
+  }
+  if (classII.length > 0) {
+    parts.push(
+      `${classII.length} class II (${classII.map((r) => r.allele).join(", ")})`,
+    );
+  }
+
+  return (
+    <div
+      style={{
+        margin: "0 22px 16px",
+        padding: "10px 14px",
+        borderRadius: 10,
+        background: "color-mix(in oklch, var(--warm) 8%, var(--surface-strong))",
+        border: "1px solid color-mix(in oklch, var(--warm) 30%, var(--line))",
+        display: "flex",
+        gap: 10,
+        alignItems: "flex-start",
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          flexShrink: 0,
+          marginTop: 2,
+          width: 16,
+          height: 16,
+          borderRadius: 999,
+          background: "color-mix(in oklch, var(--warm) 28%, transparent)",
+          color: "var(--warm)",
+          fontFamily: "var(--font-mono)",
+          fontSize: 11,
+          fontWeight: 700,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        !
+      </span>
+      <div style={{ fontSize: 13, lineHeight: 1.55, color: "var(--ink-2)" }}>
+        <strong style={{ color: "var(--ink)" }}>
+          {rejected.length} of {totalAlleles} alleles skipped by the predictors.
+        </strong>{" "}
+        {parts.join(" · ")}. The IEDB-bundled NetMHCpan / NetMHCIIpan tables don&apos;t
+        carry these names, so their peptides couldn&apos;t be scored and this run&apos;s
+        coverage is reduced. Details per allele below.
+      </div>
+    </div>
   );
 }
 
