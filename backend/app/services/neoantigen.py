@@ -1621,9 +1621,26 @@ def _build_heatmap(
 
 
 def _build_top_candidates(
-    class_i: list[ParsedEpitope], class_ii: list[ParsedEpitope]
+    class_i: list[ParsedEpitope],
+    class_ii: list[ParsedEpitope],
+    *,
+    prefilter_class_i: Optional[list[ParsedEpitope]] = None,
+    prefilter_class_ii: Optional[list[ParsedEpitope]] = None,
 ) -> list[TopCandidate]:
-    # Best binder per (peptide, class) combination.
+    """Rank the shortlist, with two wrinkles layered on a pure-IC50 sort:
+
+    1. ``CANCER_GENE_SHORTLIST_FLOOR`` of the slots are reserved for
+       cancer-gene peptides when any exist, so drivers don't get elbowed
+       out by stronger-binding passengers.
+
+    2. *Driver rescue* — if the pVACseq-filtered set is driver-poor but
+       the pre-filter pool contains additional cancer-gene peptides that
+       still bind below the threshold, those are added to the driver pool.
+       pVACseq's expression / coverage filters are typically tuned for
+       passengers; we give canonical drivers a relaxed path so clinically
+       meaningful mutations (e.g. CD79A, IDH1, SMARCA4) aren't dropped
+       silently when they fail an expression cutoff.
+    """
     by_peptide: dict[tuple[str, str], ParsedEpitope] = {}
     for entry in class_i + class_ii:
         key = (entry.peptide, entry.mhc_class)
@@ -1635,11 +1652,24 @@ def _build_top_candidates(
     driver_binders = [e for e in all_binders if _is_cancer_gene(e.gene)]
     other_binders = [e for e in all_binders if not _is_cancer_gene(e.gene)]
 
-    # Reserve up to CANCER_GENE_SHORTLIST_FLOOR of the slots for drivers when any
-    # exist, then fill the remainder with the best non-driver binders by IC50.
-    # A pure IC50 sort pushes drivers off the list for real canine/human data —
-    # passenger mutations (olfactory receptors, ENSCAFG entries) often bind more
-    # strongly than the drivers that actually matter for a vaccine.
+    # Extend the driver pool with rescued peptides: driver-gene binders from the
+    # pre-filter pool that (a) meet the binding threshold and (b) aren't already
+    # in the filtered set. Dedup by (peptide, mhc_class).
+    filtered_keys = {(e.peptide, e.mhc_class) for e in driver_binders}
+    rescue_pool: list[ParsedEpitope] = []
+    for entry in (prefilter_class_i or []) + (prefilter_class_ii or []):
+        if entry.ic50 >= BINDING_THRESHOLD_NM:
+            continue
+        if not _is_cancer_gene(entry.gene):
+            continue
+        key = (entry.peptide, entry.mhc_class)
+        if key in filtered_keys:
+            continue
+        rescue_pool.append(entry)
+        filtered_keys.add(key)
+    rescue_pool.sort(key=lambda e: e.ic50)
+    driver_binders = sorted(driver_binders + rescue_pool, key=lambda e: e.ic50)
+
     driver_cap = (
         min(len(driver_binders), math.ceil(TOP_CANDIDATES_LIMIT * CANCER_GENE_SHORTLIST_FLOOR))
         if driver_binders else 0
@@ -1790,7 +1820,14 @@ def compute_neoantigen_metrics(
     ]
 
     heatmap = _build_heatmap(filtered_class_i, filtered_class_ii, inputs.patient_alleles)
-    top = _build_top_candidates(filtered_class_i, filtered_class_ii)
+    # Pass the full pre-filter pool so driver peptides that pVACseq's expression
+    # filter dropped can still be rescued into the shortlist.
+    top = _build_top_candidates(
+        filtered_class_i,
+        filtered_class_ii,
+        prefilter_class_i=class_i,
+        prefilter_class_ii=class_ii,
+    )
 
     return NeoantigenMetricsResponse(
         pvacseq_version=_pvacseq_version(),
