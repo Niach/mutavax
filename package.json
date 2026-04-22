@@ -18,6 +18,7 @@
     "test:backend:real-data": "./.venv/bin/pytest -m \"integration and real_data\" backend/tests/test_real_data_ingestion.py",
     "test:browser:real-data": "playwright test tests/e2e/ingestion-real-data.spec.ts",
     "test:real-data": "npm run test:backend:real-data && npm run test:browser:real-data",
+    "test:validation": "./.venv/bin/pytest -m validation backend/tests/validation",
     "research:run": "python3 scripts/run_research_intelligence.py",
     "research:dry-run": "python3 scripts/run_research_intelligence.py --dry-run",
     "sample-data:smoke": "python3 scripts/fetch_colo829_sample_data.py --mode smoke",
