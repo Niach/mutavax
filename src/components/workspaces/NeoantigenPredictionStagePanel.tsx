@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import AntigenFlow from "@/components/workspaces/neoantigen/AntigenFlow";
@@ -519,24 +520,24 @@ export default function NeoantigenPredictionStagePanel({
           flexWrap: "wrap",
         }}
       >
-        <div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <Eyebrow>Next</Eyebrow>
-          <div
-            style={{
-              marginTop: 6,
-              fontSize: 15,
-              fontWeight: 500,
-              color: "var(--ink)",
-            }}
+          <span
+            style={{ fontSize: 15, fontWeight: 500, color: "var(--ink)" }}
           >
-            Epitope selection (pVACview) shortlists 10–20 of these for the vaccine
-            cassette.
-          </div>
-          <p style={{ margin: "4px 0 0", fontSize: 13.5, color: "var(--muted)" }}>
-            Balances class I vs. II coverage, diversifies source genes and alleles, and
-            avoids peptides that hit self-proteins. Not shipped yet.
-          </p>
+            Curate the cassette — pick 8 peptides for the vaccine.
+          </span>
+          <span style={{ fontSize: 13, color: "var(--muted)" }}>
+            Balances class I / II coverage, diversifies genes and alleles, and
+            flags peptides that hit self-proteins.
+          </span>
         </div>
+        <Link
+          href={`/workspaces/${workspace.id}/epitope-selection`}
+          className="cs-btn cs-btn-primary"
+        >
+          Open stage 06 →
+        </Link>
       </div>
     </>
   );

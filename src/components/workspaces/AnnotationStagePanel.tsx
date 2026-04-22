@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import AnnotatedVariantsTable from "@/components/workspaces/annotation/AnnotatedVariantsTable";
@@ -655,31 +656,24 @@ export default function AnnotationStagePanel({
           flexWrap: "wrap",
         }}
       >
-        <div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <Eyebrow>Next</Eyebrow>
-          <div
-            style={{
-              marginTop: 6,
-              fontSize: 15,
-              fontWeight: 500,
-              color: "var(--ink)",
-            }}
+          <span
+            style={{ fontSize: 15, fontWeight: 500, color: "var(--ink)" }}
           >
-            Neoantigen prediction (pVACseq · NetMHCpan) is the next planned
-            stage.
-          </div>
-          <p
-            style={{
-              margin: "4px 0 0",
-              fontSize: 13.5,
-              color: "var(--muted)",
-            }}
-          >
-            It uses the annotated VCF above to shortlist tumor-specific protein
-            pieces your pet&apos;s immune system could actually see. Not shipped
-            yet.
-          </p>
+            Shortlist the fragments your pet&apos;s immune system can see.
+          </span>
+          <span style={{ fontSize: 13, color: "var(--muted)" }}>
+            pVACseq ranks peptides from the annotated VCF above against the
+            species MHC.
+          </span>
         </div>
+        <Link
+          href={`/workspaces/${workspace.id}/neoantigen-prediction`}
+          className="cs-btn cs-btn-primary"
+        >
+          Open stage 05 →
+        </Link>
       </div>
     </>
   );

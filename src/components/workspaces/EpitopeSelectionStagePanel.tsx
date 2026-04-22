@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Btn, Callout, Card, CardHead, Chip, Dot, Eyebrow } from "@/components/ui-kit";
+import { Callout, Card, CardHead, Chip, Dot, Eyebrow } from "@/components/ui-kit";
 import { useTweaks } from "@/components/dev/TweaksProvider";
 import CandidateDeck, {
   type DeckFilter,
@@ -258,36 +258,25 @@ export default function EpitopeSelectionStagePanel({
           flexWrap: "wrap",
         }}
       >
-        <div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <Eyebrow>Next</Eyebrow>
-          <div
-            style={{
-              marginTop: 6,
-              fontSize: 15,
-              fontWeight: 500,
-              color: "var(--ink)",
-            }}
+          <span
+            style={{ fontSize: 15, fontWeight: 500, color: "var(--ink)" }}
           >
-            mRNA construct design (LinearDesign + DNAchisel) turns these{" "}
-            {picked.length} peptides into a codon-optimized cassette.
-          </div>
-          <p
-            style={{
-              margin: "4px 0 0",
-              fontSize: 13.5,
-              color: "var(--muted)",
-            }}
-          >
+            Fold these {picked.length} peptides into a codon-optimized mRNA
+            cassette.
+          </span>
+          <span style={{ fontSize: 13, color: "var(--muted)" }}>
             Signal peptide → {picked.length} epitopes joined by{" "}
             {picked.some((p) => p.class === "II") ? "AAY / GPGPG" : "AAY"}{" "}
-            linkers → stop · folded into the mRNA sequence. Not shipped yet.
-          </p>
+            linkers → stop, optimized by LinearDesign + DNAchisel.
+          </span>
         </div>
         <Link
           href={`/workspaces/${workspace.id}/construct-design`}
-          style={{ textDecoration: "none" }}
+          className="cs-btn cs-btn-primary"
         >
-          <Btn variant="ghost">Peek at the roadmap →</Btn>
+          Open stage 07 →
         </Link>
       </div>
     </>

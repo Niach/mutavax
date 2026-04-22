@@ -125,6 +125,9 @@ export default function ConsequenceDonut({ entries }: ConsequenceDonutProps) {
             display: "flex",
             flexDirection: "column",
             gap: 6,
+            maxHeight: 220,
+            overflowY: "auto",
+            paddingRight: 6,
           }}
         >
           {slices.map((sl, i) => (

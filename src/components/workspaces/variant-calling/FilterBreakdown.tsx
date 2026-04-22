@@ -25,8 +25,14 @@ export default function FilterBreakdown({ entries }: FilterBreakdownProps) {
           <h3>Why variants were rejected</h3>
         </div>
       </div>
-      <div style={{ padding: "10px 22px 18px" }}>
-        {sorted.map((f) => (
+      <div
+        style={{
+          padding: "6px 22px 14px",
+          maxHeight: 420,
+          overflowY: "auto",
+        }}
+      >
+        {sorted.map((f, idx) => (
           <div
             key={f.name}
             className="cs-spread"
@@ -35,7 +41,10 @@ export default function FilterBreakdown({ entries }: FilterBreakdownProps) {
               justifyContent: "space-between",
               alignItems: "center",
               padding: "8px 0",
-              borderBottom: "1px solid var(--line)",
+              borderBottom:
+                idx === sorted.length - 1
+                  ? "none"
+                  : "1px solid var(--line)",
               fontSize: 13,
             }}
           >
