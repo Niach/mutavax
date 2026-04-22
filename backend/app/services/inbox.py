@@ -49,11 +49,12 @@ def list_inbox() -> list[InboxEntry]:
     """
     root = get_inbox_root()
     entries: list[InboxEntry] = []
-    try:
-        iterator = root.iterdir()
-    except FileNotFoundError:
+    if not root.is_dir():
+        # First-run state: the operator may not have created the inbox
+        # folder yet. Surface an empty list rather than raising — the
+        # UI renders a friendly "drop FASTQs here" prompt in that case.
         return []
-    for child in iterator:
+    for child in root.iterdir():
         if child.name.startswith("."):
             continue
         if not child.is_file():

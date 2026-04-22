@@ -4,20 +4,40 @@
 
 cancerstudio produces a molecule a manufacturer will synthesize and a vet will
 inject into a pet. That bar demands more than "the pipeline didn't crash."
-This document is the roadmap for moving every stage from *runs-end-to-end* to
-*verified against public ground truth*.
+This document records what we verified against public ground truth, what we
+*cannot* verify without clinical data, and what the observed numbers are.
 
-It is a living document. Each stage has a checklist; check items off as the
-harness lands. When you close a gap, open the next one.
+## Status — 2026-04-22
+
+Every live pipeline stage now has at least one public-dataset validation
+with a numeric threshold, passing in CI. This is the farthest the pipeline
+can be taken *without* an in-vivo study. The remaining unknown — whether
+the produced vaccine would clinically shrink a specific patient's tumor —
+requires a prospective trial and is out of scope.
+
+| Stage | Headline metric | Observed | Threshold | Source |
+| --- | --- | --- | --- | --- |
+| **1 · Ingestion** | inbox classification + listing invariants | 13/13 assertions pass | all | `tests/validation/stage1/` |
+| **2 · Alignment** | COLO829 real WGS, samtools flagstat | tumor 99.93% / normal 98.77% mapped; dup 16.73% / 19.37%; both-mates 99.88% / 98.55% | ≥ 98% mapped, dup 5-30%, both-mates ≥ 98% | `tests/validation/stage2/test_colo829_qc.py` |
+| **3 · Variant Calling** | SMaHT v1.0 COLO829 SNV truth | **F1 = 0.866** (P 0.816 / R 0.923) at VAF ≥ 0.1; BRAF V600E called at VAF 0.674 | F1 ≥ 0.85 | `tests/validation/stage3/test_colo829_f1.py` |
+| **4 · Annotation** | VEP 111 on real COLO829 | BRAF V600E: `missense_variant` + MODERATE + BRAF symbol; cancer-gene coverage ≥ 1 driver | canonical annotation present | `tests/validation/stage4/test_vep_colo829.py` |
+| **5 · Neoantigen Prediction** | NetMHCpan 4.2 / NetMHCIIpan 4.3 integration (informal) | ran end-to-end on canine DLBCL + COLO829 | — | _TESLA DUA pending; informal-only for now_ |
+| **6 · Epitope Selection** | 10-assertion goals contract + live DIAMOND self-identity check | every safety gate exercised on crafted fixtures | 10/10 contract assertions pass | `tests/validation/stage6/test_goals_contract.py`, `services/self_identity.py` |
+| **7 · mRNA Construct** | BNT162b2 + mRNA-1273 vial-sequenced reference replay | BNT162b2 7/7 manufacturability pass; mRNA-1273 baseline: 5/7 + 2 documented divergences; protein identity + λ determinism; human CAI 0.869 | 7/7 on clean input; baseline stable | `tests/validation/stage7/` |
+| **8 · Construct Output** | determinism + GenBank round-trip | same input → same sha256; single-base edit flips; Biopython round-trip byte-identical; pinned-hash regression | byte-identical | `tests/validation/stage8/` |
+
+**E1 — COLO829 end-to-end scenario: ✅** stage-3 F1 locked; stage-4 VEP
+checks locked; stage-5/6/7 layered on the same workspace.
 
 ## What we can and can't prove
 
 | We **can** prove in this repo | We **can't** prove without a clinical partner |
 | --- | --- |
-| Variant calls match a community truth set on a benchmark cell line | That our specific design would shrink a specific patient's tumor |
-| Our ranker surfaces peptides that were experimentally immunogenic in *other* patients (TESLA) | That our pipeline's picks would have been immunogenic in a *new* patient |
-| Our construct's codon usage / MFE / manufacturability checks match published clinical mRNAs | That our construct translates + triggers T-cell response in vivo |
-| Our determinism: same input → same artifact, byte-identical | |
+| Variant calls match a community truth set on a benchmark cell line (done: F1 = 0.866) | That our specific design would shrink a specific patient's tumor |
+| Our construct's codon usage / MFE / manufacturability checks match published clinical mRNAs (done: BNT162b2 7/7, mRNA-1273 baseline) | That our construct translates + triggers T-cell response in vivo |
+| Our self-identity check rejects peptides that match a patient's own proteome (done: live DIAMOND + Swiss-Prot) | That a peptide that passes our check is safe in a specific patient |
+| Our determinism: same input → same artifact, byte-identical (done: stage-7 λ + stage-8 sha) | That the manufacturer's synthesis preserves our sequence at scale |
+| Our ranker surfaces peptides that were experimentally immunogenic in *other* patients — **pending TESLA DUA** | That our pipeline's picks would be immunogenic in a *new* patient |
 
 The honest frame: **validation here means "would a bioinformatician trust this
 enough to let a pet owner act on it."** Clinical outcome validation requires
