@@ -42,6 +42,8 @@ import logging
 import os
 import re
 import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -90,6 +92,10 @@ PROTEOME_ENV_VARS = {
 class ProteomeConfig:
     fasta_path: Path
     label: str
+    # DIAMOND index is optional — only needed for ≥14-aa (class-II)
+    # peptide lookups. Shorter peptides use pure-Python substring /
+    # regex and don't touch DIAMOND at all.
+    dmnd_path: Optional[Path] = None
 
 
 def resolve_proteome_config(preset: ReferencePreset) -> Optional[ProteomeConfig]:
@@ -118,7 +124,12 @@ def resolve_proteome_config(preset: ReferencePreset) -> Optional[ProteomeConfig]
 
     if not fasta_path.is_file():
         return None
-    return ProteomeConfig(fasta_path=fasta_path, label=label)
+    dmnd = fasta_path.with_suffix(".dmnd")
+    return ProteomeConfig(
+        fasta_path=fasta_path,
+        label=label,
+        dmnd_path=dmnd if dmnd.is_file() else None,
+    )
 
 
 def ensure_proteome_ready(preset: ReferencePreset) -> Optional[ProteomeConfig]:
@@ -140,6 +151,14 @@ def ensure_proteome_ready(preset: ReferencePreset) -> Optional[ProteomeConfig]:
 
     existing = resolve_proteome_config(preset)
     if existing is not None:
+        # FASTA is cached. If the DIAMOND index is missing and the
+        # binary is available, build it on the fly so subsequent
+        # class-II lookups don't fall through. Pre-DIAMOND cache
+        # directories (built before we added the index) would
+        # otherwise miss class-II peptides forever.
+        if existing.dmnd_path is None and shutil.which("diamond") is not None:
+            _build_diamond_index(existing.fasta_path)
+            return resolve_proteome_config(preset)
         return existing
 
     try:
@@ -152,6 +171,31 @@ def ensure_proteome_ready(preset: ReferencePreset) -> Optional[ProteomeConfig]:
         )
         return None
     return resolve_proteome_config(preset)
+
+
+def _build_diamond_index(fasta_path: Path) -> None:
+    """Build a DIAMOND ``.dmnd`` index next to an existing FASTA.
+    Non-fatal on failure — short-peptide (≤13 aa) lookups work without
+    it; only class-II lookups need the index."""
+    target = fasta_path.with_suffix(".dmnd")
+    logger.info(
+        "self-identity: building DIAMOND index at %s", target
+    )
+    try:
+        subprocess.run(
+            ["diamond", "makedb",
+             "--in", str(fasta_path),
+             "--db", str(target.with_suffix("")),
+             "--quiet"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+    except subprocess.SubprocessError as error:
+        logger.warning(
+            "self-identity: DIAMOND makedb failed (%s); class-II "
+            "lookups will fall back to Python only", error,
+        )
 
 
 def _bootstrap_proteome(preset: ReferencePreset, source: ProteomeSource) -> None:
@@ -182,6 +226,29 @@ def _bootstrap_proteome(preset: ReferencePreset, source: ProteomeSource) -> None
         if target_fasta.stat().st_size == 0:
             target_fasta.unlink()
             raise RuntimeError("UniProt returned an empty proteome FASTA")
+
+        # Build a DIAMOND index alongside the FASTA. This is only used
+        # for the ≥14-aa (class-II) lookup path; short peptides don't
+        # need it and the check works fine without it. Failure is
+        # non-fatal — we log and proceed.
+        if shutil.which("diamond") is not None:
+            target_dmnd = target_fasta.with_suffix(".dmnd")
+            try:
+                subprocess.run(
+                    ["diamond", "makedb",
+                     "--in", str(target_fasta),
+                     "--db", str(target_dmnd.with_suffix("")),
+                     "--quiet"],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                )
+            except subprocess.SubprocessError as error:
+                logger.warning(
+                    "self-identity: DIAMOND makedb failed (%s); "
+                    "class-II self-identity will fall back to Python only",
+                    error,
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -309,17 +376,130 @@ def _best_hit_for_peptide(
     return None
 
 
+# DIAMOND's seed-and-extend doesn't seed reliably on queries shorter
+# than 14 aa (empirically verified: 0 hits on 8-13 mers, correct hits
+# on 14+ mers). Peptides at or below this length go through the
+# pure-Python path; longer peptides use DIAMOND.
+_PYTHON_MAX_LEN = 13
+
+
+def _check_long_via_diamond(
+    long_items: list[tuple[str, str]],
+    config: ProteomeConfig,
+) -> dict[str, EpitopeSafetyFlagResponse]:
+    """Run DIAMOND blastp of ``long_items`` (peptides ≥ 14 aa) against
+    the species Swiss-Prot ``.dmnd``. Returns the same sparse flag
+    shape as the Python path. Fail-open: if DIAMOND is missing, its
+    index is missing, or the subprocess errors out, returns ``{}`` and
+    logs why."""
+    if not long_items:
+        return {}
+    if shutil.which("diamond") is None:
+        logger.warning(
+            "self-identity: DIAMOND unavailable — %d class-II peptides "
+            "will go unchecked for self-similarity",
+            len(long_items),
+        )
+        return {}
+    if config.dmnd_path is None:
+        logger.warning(
+            "self-identity: DIAMOND index missing at %s; rebuilding with "
+            "`diamond makedb` from the cached FASTA would recover it",
+            config.fasta_path.with_suffix(".dmnd"),
+        )
+        return {}
+
+    with tempfile.TemporaryDirectory(prefix="self_identity_") as tmp:
+        query = Path(tmp) / "query.faa"
+        with query.open("w", encoding="utf-8") as handle:
+            for peptide_id, seq in long_items:
+                handle.write(f">{peptide_id}\n{seq}\n")
+        try:
+            completed = subprocess.run(
+                [
+                    "diamond", "blastp",
+                    "--query", str(query),
+                    "--db", str(config.dmnd_path.with_suffix("")),
+                    # Short-peptide mode: off composition stats + PAM30
+                    # + no masking (the documented DIAMOND flags for
+                    # queries ≤ 30 aa).
+                    "--matrix", "PAM30",
+                    "--comp-based-stats", "0",
+                    "--masking", "none",
+                    "--evalue", "1000",
+                    "--id", str(_RISK_ELEVATED_FLOOR),
+                    "--query-cover", "90",
+                    "--max-target-seqs", "1",
+                    "--outfmt", "6",
+                    "qseqid", "sseqid", "stitle", "pident", "length",
+                    "--threads", "4",
+                    "--quiet",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+        except subprocess.SubprocessError as error:
+            logger.warning(
+                "self-identity: DIAMOND blastp failed (%s); %d long "
+                "peptides left unchecked",
+                error, len(long_items),
+            )
+            return {}
+
+    flags: dict[str, EpitopeSafetyFlagResponse] = {}
+    peptide_len_by_id = {pid: len(seq) for pid, seq in long_items}
+    for line in completed.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        qseqid, sseqid, stitle, pident_s, length_s = parts[:5]
+        if qseqid in flags:
+            continue  # BLAST output is best-first within each query.
+        try:
+            pident = float(pident_s)
+            length = int(length_s)
+        except ValueError:
+            continue
+        risk = _risk_for(pident)
+        if risk is None:
+            continue
+        gene = _gene_label(stitle, sseqid)
+        identity_int = int(round(pident))
+        # For the "critical" tier DIAMOND reports the match length
+        # aligned, which may be shorter than the full peptide. Keep
+        # DIAMOND's length in the note so the UI can render it
+        # honestly (e.g., "100% identity over 14 aa of a 15-mer").
+        flags[qseqid] = EpitopeSafetyFlagResponse(
+            peptide_id=qseqid,
+            self_hit=gene,
+            identity=identity_int,
+            risk=risk,
+            note=_note_for(risk, gene, identity_int, length),
+        )
+    return flags
+
+
 def run_self_identity_check(
     peptides: Iterable[tuple[str, str]],
     preset: ReferencePreset,
 ) -> dict[str, EpitopeSafetyFlagResponse]:
-    """Scan each peptide against the species Swiss-Prot proteome and
-    return a sparse ``{peptide_id: EpitopeSafetyFlagResponse}`` for
-    any peptide whose best hit clears the ``_RISK_MILD_FLOOR`` identity
-    threshold.
+    """Scan each peptide against the species Swiss-Prot proteome.
 
-    Fail-open: on any I/O error, return ``{}`` and let the stage
-    proceed (with a prominent warning logged)."""
+    Dispatch by length:
+
+    * **≤13 aa (class-I + short class-II):** pure-Python substring
+      + single-mismatch regex scan. Fast (~5 s for a 50-peptide
+      cassette). Detects critical (exact) + elevated (d=1 anywhere).
+    * **≥14 aa (class-II proper):** DIAMOND blastp on the
+      species-specific ``.dmnd`` index. DIAMOND's seed-and-extend
+      does not reliably seed on queries < 14 aa, so we only invoke it
+      here where it actually works.
+
+    Fail-open on any I/O error: returns ``{}`` and logs prominently."""
     items = list(peptides)
     if not items:
         return {}
@@ -332,35 +512,49 @@ def run_self_identity_check(
         )
         return {}
 
-    try:
-        proteome = _load_proteome(str(config.fasta_path))
-    except OSError as error:
-        logger.warning(
-            "self-identity: proteome load failed (%s) — check skipped", error
-        )
-        return {}
-
-    flags: dict[str, EpitopeSafetyFlagResponse] = {}
+    short_items: list[tuple[str, str]] = []
+    long_items: list[tuple[str, str]] = []
     for peptide_id, raw_seq in items:
         seq = (raw_seq or "").strip().upper()
         if not seq or not seq.isalpha():
             continue
-        hit = _best_hit_for_peptide(seq, proteome)
-        if hit is None:
-            continue
-        gene, matches = hit
-        pident = matches / len(seq) * 100
-        risk = _risk_for(pident)
-        if risk is None:
-            continue
-        identity_int = int(round(pident))
-        flags[peptide_id] = EpitopeSafetyFlagResponse(
-            peptide_id=peptide_id,
-            self_hit=gene,
-            identity=identity_int,
-            risk=risk,
-            note=_note_for(risk, gene, identity_int, len(seq)),
+        (long_items if len(seq) >= _PYTHON_MAX_LEN + 1 else short_items).append(
+            (peptide_id, seq)
         )
+
+    flags: dict[str, EpitopeSafetyFlagResponse] = {}
+
+    if short_items:
+        try:
+            proteome = _load_proteome(str(config.fasta_path))
+        except OSError as error:
+            logger.warning(
+                "self-identity: proteome load failed (%s) — "
+                "%d short peptides left unchecked",
+                error, len(short_items),
+            )
+            proteome = ()
+        for peptide_id, seq in short_items:
+            hit = _best_hit_for_peptide(seq, proteome)
+            if hit is None:
+                continue
+            gene, matches = hit
+            pident = matches / len(seq) * 100
+            risk = _risk_for(pident)
+            if risk is None:
+                continue
+            identity_int = int(round(pident))
+            flags[peptide_id] = EpitopeSafetyFlagResponse(
+                peptide_id=peptide_id,
+                self_hit=gene,
+                identity=identity_int,
+                risk=risk,
+                note=_note_for(risk, gene, identity_int, len(seq)),
+            )
+
+    if long_items:
+        flags.update(_check_long_via_diamond(long_items, config))
+
     return flags
 
 

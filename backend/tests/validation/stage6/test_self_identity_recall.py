@@ -253,3 +253,100 @@ def test_self_peptides_hit_critical_risk_tier() -> None:
         f"Only {critical_ratio:.2%} of self-peptides landed in 'critical' "
         f"tier. Distribution: {tier_counts}. Expected ≥80% critical."
     )
+
+
+# ---------------------------------------------------------------------------
+# Class-II path — ≥14 aa peptides route through DIAMOND.
+# ---------------------------------------------------------------------------
+
+
+_CLASS_II_LENGTHS = (15, 18)
+
+
+@pytest.mark.skipif(
+    not _diamond_available(),
+    reason="DIAMOND binary not on PATH (container-only)",
+)
+@pytest.mark.parametrize("peptide_len", _CLASS_II_LENGTHS)
+def test_class_ii_self_peptide_recall(peptide_len: int) -> None:
+    """Class-II peptides (≥14 aa) route through DIAMOND rather than
+    the Python substring scan. Sampling 25 length-N windows from
+    Swiss-Prot, DIAMOND must flag ≥95% as self-matches (they're
+    exact substrings by construction). Regression-guards the
+    dispatch + DIAMOND invocation for class-II length ranges."""
+    config = self_identity.ensure_proteome_ready(ReferencePreset.GRCH38)
+    if config is None:
+        pytest.skip("Proteome bootstrap failed")
+    if config.dmnd_path is None:
+        pytest.skip("DIAMOND index absent; bootstrap probably failed to build it")
+
+    rng = random.Random(_SEED + peptide_len)
+    entries = _parse_fasta(config.fasta_path)
+    rng.shuffle(entries)
+    peptides: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for header, seq in entries:
+        if len(seq) < peptide_len + 20:
+            continue
+        start = rng.randrange(10, len(seq) - peptide_len - 10)
+        pep = seq[start : start + peptide_len]
+        if pep in seen or not pep.isalpha() or any(aa in "UBZXO*-" for aa in pep):
+            continue
+        seen.add(pep)
+        accession = header.split("|")[1] if "|" in header else header[:16]
+        peptides.append((f"cii-{peptide_len}-{accession}-{start}", pep))
+        if len(peptides) >= 25:
+            break
+
+    flags = self_identity.run_self_identity_check(peptides, ReferencePreset.GRCH38)
+    recall = len(flags) / len(peptides)
+    missed = [p for pid, p in peptides if pid not in flags]
+    assert recall >= 0.95, (
+        f"Class-II {peptide_len}-mer recall {recall:.2%} below 0.95 floor. "
+        f"DIAMOND missed {len(missed)} of {len(peptides)} known-self peptides.\n"
+        f"  sample missed: {missed[:3]}"
+    )
+
+
+def test_dispatch_routes_by_length(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Short peptides must go through the pure-Python path; long ones
+    through DIAMOND. Stub both paths and verify the dispatch allocates
+    each peptide to the right backend."""
+    fasta = tmp_path / "mini.fasta"
+    fasta.write_text(">sp|P0|A HUMAN\n" + "A" * 200 + "\n")
+    dmnd = tmp_path / "mini.dmnd"
+    dmnd.write_bytes(b"\x00")
+    config = self_identity.ProteomeConfig(
+        fasta_path=fasta, label="test", dmnd_path=dmnd
+    )
+    monkeypatch.setattr(self_identity, "ensure_proteome_ready", lambda p: config)
+
+    short_calls: list[int] = []
+    long_calls: list[int] = []
+
+    def fake_short(seq: str, proteome):  # noqa: ANN001
+        short_calls.append(len(seq))
+        return None
+
+    def fake_long(long_items, cfg):  # noqa: ANN001
+        long_calls.extend(len(p[1]) for p in long_items)
+        return {}
+
+    monkeypatch.setattr(self_identity, "_best_hit_for_peptide", fake_short)
+    monkeypatch.setattr(self_identity, "_check_long_via_diamond", fake_long)
+
+    self_identity.run_self_identity_check(
+        [
+            ("a", "ACDEFGHIK"),           # 9-mer → short
+            ("b", "ACDEFGHIKLMN"),        # 12-mer → short
+            ("c", "ACDEFGHIKLMNP"),       # 13-mer → short (boundary)
+            ("d", "ACDEFGHIKLMNPQ"),      # 14-mer → long (DIAMOND starts)
+            ("e", "ACDEFGHIKLMNPQRSTV"),   # 18-mer → long
+        ],
+        ReferencePreset.GRCH38,
+    )
+
+    assert sorted(short_calls) == [9, 12, 13]
+    assert sorted(long_calls) == [14, 18]

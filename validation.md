@@ -258,14 +258,23 @@ workspace's species (human / dog / cat). The proteome is
 auto-bootstrapped on first real-data stage-6 load and cached under
 `${CANCERSTUDIO_DATA_ROOT}/references/proteome/{species}/`.
 
-**Why not DIAMOND.** The first implementation used DIAMOND blastp,
-which is the industry-standard BLAST-accelerator. It turned out to
-be *silently non-functional* for class-I neoantigen peptides (8-11
-aa): DIAMOND's seed-and-extend heuristic doesn't seed on queries
-shorter than ~15 aa and returned zero hits for every 9-mer we tested,
-including literal substrings of the same proteome. Caught by the
-stage-6 recall validation (see below). Replaced with an in-memory
-substring scan: ~5 s per 50-peptide cassette, deterministic.
+**Dispatch by peptide length.** An earlier DIAMOND-only implementation
+was silently non-functional for class-I neoantigen peptides (8-11 aa):
+DIAMOND's seed-and-extend heuristic doesn't seed reliably on queries
+shorter than 14 aa and returned zero hits on 9-mers that were literal
+substrings of the same proteome. The current service dispatches:
+
+* **≤13 aa (class-I + short class-II):** pure-Python substring +
+  single-mismatch regex scan against the cached FASTA. ~5 s per
+  50-peptide cassette. Deterministic, no external binary.
+* **≥14 aa (class-II proper):** DIAMOND blastp against the
+  species ``.dmnd`` index (built once from the cached FASTA).
+  Empirically verified to seed and return correct hits on 14-mers
+  and longer.
+
+The dispatch was calibrated empirically — tested DIAMOND on lengths
+11, 12, 13, 14, 15, 16, 18 on our proteome; it returned 0 hits for
+≤13 and correct hits for ≥14.
 
 Risk tiers emitted by the real check:
 
@@ -310,6 +319,22 @@ Two public-data validations lock the real check's behaviour:
 
 Both tests live under `backend/tests/validation/stage6/test_self_identity_recall.py`
 and run in-container in under 5 s once the proteome cache is warm.
+
+### Class-II self-identity via DIAMOND — 2026-04-22
+
+Companion recall test for peptides ≥ 14 aa (class-II length range),
+which route through DIAMOND rather than the Python substring scan
+because Python's d=2 regex expansion becomes expensive for longer
+peptides. Observed:
+
+* **15-mer recall: 25/25 = 100%** (all classified as critical)
+* **18-mer recall: 25/25 = 100%** (all classified as critical)
+* **Dispatch unit test**: peptides of length 9/12/13 routed to the
+  Python path, peptides of length 14/18 routed to the DIAMOND path —
+  verified via monkeypatch-backed spy.
+
+Full stage-6 validation suite (class-I + class-II + specificity):
+**9 tests, 5.5 s, all passing** on a warmed-up proteome cache.
 
 ## Stage 7 — mRNA Construct Design
 
