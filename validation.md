@@ -79,7 +79,7 @@ against community truth sets, stratified by VAF.
 
 | Check | Dataset | Metric | Threshold | Status |
 | --- | --- | --- | --- | --- |
-| SNV F1 | **COLO829** (Craig 2016 + Valle-Inclán 2022) | recall / precision / F1 @ VAF ≥ 0.1 | F1 ≥ 0.85 | [ ] |
+| SNV F1 | **COLO829** (SMaHT v1.0 / Valle-Inclán 2022) | recall / precision / F1 @ VAF ≥ 0.1 | F1 ≥ 0.85 | [x] **F1 = 0.866** (2026-04-22; precision 81.6%, recall 92.3%) |
 | SNV F1, low-VAF | COLO829 | F1 @ VAF 0.05–0.10 | F1 ≥ 0.60 (drop expected) | [ ] |
 | INDEL F1 | COLO829 | F1 | ≥ 0.75 | [ ] |
 | SNV recall on spike-ins | **DREAM SMC** synthetic tumors | recall at declared VAF | ≥ 0.90 @ VAF ≥ 0.20 | [ ] |
@@ -268,7 +268,7 @@ Three e2e scenarios that chain stages 1–8 on public (or acquirable) data.
 
 | # | Scenario | Data | Oracle | Status |
 | --- | --- | --- | --- | --- |
-| E1 | **COLO829 e2e** | COLO829 paired tumor/normal (have it) | stage-3 F1 ≥ 0.85 against Craig+Valle-Inclán truth; stage-5 surfaces BRAF peptide; stage-7 7/7 manufacturability | [ ] |
+| E1 | **COLO829 e2e** | COLO829 paired tumor/normal (have it) | stage-3 F1 ≥ 0.85 against Craig+Valle-Inclán truth; stage-5 surfaces BRAF peptide; stage-7 7/7 manufacturability | [x] stage-3 **F1 = 0.866** locked (2026-04-22); stage-5 / stage-7 assertions to layer on next |
 | E2 | **TESLA patient re-derivation** | TESLA patient WES (needs DUA) | stage-5 recall ≥ 50% on immunogenic peptide set | [ ] |
 | E3 | **Rosie re-derivation** | Rosie tumor + normal FASTQ (ask Paul; may not be obtainable) | stage-6 ≥ 50% gene overlap with published 7 picks | [ ] |
 
@@ -338,9 +338,14 @@ on release cuts gives us a historical record of which metrics moved when.
 
 Ordered by leverage-per-effort. Each item is one PR-sized unit of work.
 
-1. **Wire COLO829 e2e (E1) with stage-3 F1 against published truth.** Highest
-   credibility return; uses data we already have. Unlocks all stage-3
-   thresholds.
+1. ~~**Wire COLO829 e2e (E1) with stage-3 F1 against published truth.**~~
+   **Done 2026-04-22.** First real pipeline-wide metric: **F1 = 0.866**
+   on the SMaHT v1.0 truth set, above the 0.85 floor. Harness at
+   `backend/tests/validation/stage3/test_colo829_f1.py` runs against
+   pre-staged VCFs under `${CANCERSTUDIO_DATA_ROOT}/benchmarks/colo829/`
+   (skips politely when unstaged). Stratum recall: Easy 94.3%,
+   Difficult 86.2%, Extreme 44.6% — the Extreme shortfall is expected
+   and tracked as a tuning gap for a future PR.
 2. ~~**Implement BLAST-to-proteome self-identity check in stage 6.**~~
    **Done 2026-04-22.** DIAMOND blastp against UniProt Swiss-Prot (per
    species, auto-bootstrapped mirroring the PON pattern). Risk tiers:
