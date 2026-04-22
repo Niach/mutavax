@@ -12,6 +12,7 @@ ARG STROBEALIGN_VERSION=0.17.0
 ARG GATK_VERSION=4.5.0.0
 ARG VEP_RELEASE=111
 ARG LINEARDESIGN_REF=main
+ARG DIAMOND_VERSION=2.1.9
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -75,6 +76,17 @@ RUN curl -fsSL \
         "/tmp/strobealign-${STROBEALIGN_VERSION}/build/strobealign" \
         /usr/local/bin/strobealign \
     && rm -rf /tmp/strobealign*
+
+# DIAMOND — stage 6 self-identity safety check. BLAST-compatible
+# short-peptide aligner used to match picked epitopes against the
+# species-specific UniProt Swiss-Prot proteome. Much faster than
+# classic BLAST on 8-11 aa queries, which is all we ever throw at it.
+RUN curl -fsSL \
+        "https://github.com/bbuchfink/diamond/releases/download/v${DIAMOND_VERSION}/diamond-linux64.tar.gz" \
+        -o /tmp/diamond.tar.gz \
+    && tar -xzf /tmp/diamond.tar.gz -C /tmp diamond \
+    && install -m 0755 /tmp/diamond /usr/local/bin/diamond \
+    && rm -f /tmp/diamond.tar.gz /tmp/diamond
 
 # LinearDesign — stage 7 codon optimizer (Zhang et al. Nature 2023). The
 # repo's `lineardesign` wrapper is python2-only; we skip it and call the

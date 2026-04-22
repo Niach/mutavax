@@ -31,7 +31,9 @@ from app.models.schemas import (
     TopCandidate,
 )
 from app.services.neoantigen import load_neoantigen_stage_summary
+from app.services.self_identity import run_self_identity_check
 from app.services.workspace_store import (
+    default_reference_preset_for_species,
     get_workspace_record,
     load_workspace_epitope_config,
     store_workspace_epitope_config,
@@ -308,19 +310,28 @@ def load_epitope_stage_summary(workspace_id: str) -> EpitopeStageSummaryResponse
         )
         return _blocked_summary(workspace_id, reason)
 
+    with session_scope() as session:
+        workspace = get_workspace_record(session, workspace_id)
+        config = load_workspace_epitope_config(workspace)
+        workspace_species = workspace.species
+
     real = _real_deck_from_summary(neoantigen_summary)
     if real is not None:
         candidates, alleles, default_picks = real
-        safety: dict[str, EpitopeSafetyFlagResponse] = {}
+        # BLAST the real candidates against the species' Swiss-Prot proteome.
+        # No-op (sparse empty dict) when DIAMOND or the proteome are missing;
+        # the caller logs why. Fixture workspaces keep their fixture flags
+        # since the fixture peptides aren't real-world sequences — BLASTing
+        # them would produce misleading zero-hit results.
+        safety = run_self_identity_check(
+            [(c.id, c.seq) for c in candidates],
+            default_reference_preset_for_species(workspace_species),
+        )
     else:
         candidates = _build_candidates()
         safety = _build_safety()
         alleles = _build_alleles()
         default_picks = _default_picks()
-
-    with session_scope() as session:
-        workspace = get_workspace_record(session, workspace_id)
-        config = load_workspace_epitope_config(workspace)
 
     stored_selection = config.get("selection") if isinstance(config, dict) else None
     selection = _filtered_selection(stored_selection or [], candidates)

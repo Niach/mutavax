@@ -158,7 +158,7 @@ published vaccine designs.
 | Pancreatic | **Rojas 2023** Nature autogene cevumeran (16 PDAC patients) | same | ≥ 30% | [ ] |
 | Glioblastoma | **Keskin 2019** Nature NeoVax | same | ≥ 30% | [ ] |
 | Canine | **Paul Conyngham's Rosie case** — 7 peptides published | gene-level overlap | ≥ 50% | [ ] |
-| Self-identity safety | any run | 100% of picked peptides cleared BLAST-to-proteome (requires wiring; currently fixture-only per CLAUDE.md — **this is the #1 safety gap**) | 100% | [ ] |
+| Self-identity safety | any run | DIAMOND blastp vs. species Swiss-Prot runs for every picked peptide; risk tiers critical (100%) / elevated (≥80%) / mild (≥60%); goals check blocks "ready for construct design" on any `critical` hit | real check wired | [x] **wired 2026-04-22** (see findings below) |
 | Driver representation | any human run | ≥ 1 picked peptide from a gene in our `data/cancer_genes.csv` | ≥ 1 when drivers are in the VCF | [ ] |
 | Allele coverage goal | any run with ≥ 2 class-I and ≥ 1 class-II alleles | final cassette covers ≥ 2 class-I + ≥ 1 class-II | 100% | [ ] |
 | Gene-diversity fallback | synthetic VCF with only 4 cancer-gene variants | final cassette has ≥ 6 unique genes (the fallback we added) | 100% | [ ] |
@@ -168,6 +168,31 @@ published vaccine designs.
 **Acquisition blockers:** getting raw sequencing data for trial patients is
 often impossible. Fallback: compare *peptide sets* against their published
 picks, using the trials' patient-reported WES summary tables where available.
+
+### Self-identity check — wired 2026-04-22
+
+Replaces the fixture-only flags with real DIAMOND blastp against UniProt
+Swiss-Prot, keyed to the workspace's species (human / dog / cat). The
+proteome is auto-bootstrapped on first real-data stage-6 load and cached
+under `${CANCERSTUDIO_DATA_ROOT}/references/proteome/{species}/`, mirroring
+the PON bootstrap. Risk tiers:
+
+* `critical` — 100% identity over the full peptide (blocks "ready for
+  construct design" via the existing goals check)
+* `elevated` — ≥80% identity over ≥80% of peptide length
+* `mild`     — ≥60% identity; surfaced but non-blocking
+
+Fail-open on infrastructure issues (DIAMOND missing, proteome
+unavailable, subprocess error) — logged prominently; safety dict is
+empty. A hard-blocking fallback is a follow-up (noted under open gaps).
+
+**Known gap — canine/feline Swiss-Prot is thin.** Dog has ~500 reviewed
+entries, cat ~300. Dog TrEMBL (~46k unreviewed entries) has better
+coverage but lower per-entry quality. For the MVP we accept the
+undercoverage; if a canine peptide fails to match a self-protein because
+the *true* self-protein is unreviewed, the UI will say "safe" when it
+isn't. The operator override (future PR) and expanded TrEMBL fallback
+are both logged here as follow-ups rather than silently shipped.
 
 ## Stage 7 — mRNA Construct Design
 
@@ -316,9 +341,11 @@ Ordered by leverage-per-effort. Each item is one PR-sized unit of work.
 1. **Wire COLO829 e2e (E1) with stage-3 F1 against published truth.** Highest
    credibility return; uses data we already have. Unlocks all stage-3
    thresholds.
-2. **Implement BLAST-to-proteome self-identity check in stage 6.** The
-   biggest *safety* gap in the product — the UI implies we check for
-   self-cross-reactivity but we don't. CLAUDE.md flags this.
+2. ~~**Implement BLAST-to-proteome self-identity check in stage 6.**~~
+   **Done 2026-04-22.** DIAMOND blastp against UniProt Swiss-Prot (per
+   species, auto-bootstrapped mirroring the PON pattern). Risk tiers:
+   critical / elevated / mild. Goals check now blocks on any critical
+   hit for real-data workspaces. See Stage 6 findings below.
 3. ~~**Stage-7 reference-replay on BNT162b2 / mRNA-1273.**~~ **Done 2026-04-22.**
    Harness scaffold lives in `backend/tests/validation/`, fixtures sourced
    from NCBI, `npm run test:validation` runs the suite in seconds. See
