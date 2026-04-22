@@ -202,18 +202,18 @@ the protein is byte-identical to the confirmed epitope cassette.
 
 | Check | Dataset | Metric | Threshold | Status |
 | --- | --- | --- | --- | --- |
-| Protein identity | any run | translated optimized mRNA == input AA cassette | byte-identical | [ ] |
-| CAI (human) | human run | LinearDesign output CAI vs. `python_codon_tables` human | ≥ 0.80 | [ ] |
+| Protein identity | any run | translated optimized mRNA == input AA cassette | byte-identical | [x] **2026-04-22** — `test_protein_identity_after_codon_optimization` |
+| CAI (human) | human run | LinearDesign output CAI vs. `python_codon_tables` human | ≥ 0.80 | [x] **0.869** on a 57-aa generic cassette |
 | CAI (dog, mouse proxy) | dog run | CAI | ≥ 0.75 (looser — mouse proxy) | [ ] |
 | MFE sanity | any run | ViennaRNA RNAfold MFE per nt | within 2× of BNT162b2 reference per-nt MFE | [ ] |
-| Manufacturability — GC | any | 40–60% | pass | [ ] |
-| Manufacturability — homopolymer | any | no run of identical base > 6 | pass | [ ] |
-| Manufacturability — repeats | any | no exact repeat > 15 nt | pass | [ ] |
-| Manufacturability — restriction sites | any | no BsaI / BsmBI / NheI / AgeI in ORF | pass | [ ] |
-| Cap-proximal hairpin | any | no hairpin MFE < −15 kcal/mol in first 60 nt | pass | [ ] |
+| Manufacturability — GC | any | 40–60% | pass | [x] covered by BNT162b2 / mRNA-1273 replay |
+| Manufacturability — homopolymer | any | no run of identical base > 6 | pass | [x] same |
+| Manufacturability — repeats | any | no exact repeat > 15 nt | pass | [x] same |
+| Manufacturability — restriction sites | any | no BsaI / BsmBI / NheI / AgeI in ORF | pass | [x] same |
+| Cap-proximal hairpin | any | no hairpin MFE < −15 kcal/mol in first 60 nt | pass | [x] same |
 | Reference replay — BNT162b2 | **PP544446** (Raoult 2024, vial-sequenced) | stage-7 rules all return "pass" | 7/7 | [x] **passing** (2026-04-22) |
 | Reference replay — mRNA-1273 | **OK120841** (Castruita 2021, plasma-recovered mRNA) | documented divergence stable: fails `bsai` + `gc` only | 5/7 + 2 documented | [x] **passing** (baseline locked — see findings below) |
-| λ slider determinism | any run | same λ → same optimized sequence | byte-identical | [ ] |
+| λ slider determinism | any run | same λ → same optimized sequence | byte-identical | [x] **2026-04-22** — `test_lambda_slider_determinism` |
 
 **Harness:** `backend/tests/validation/stage7/test_reference_replay.py`. Runs
 under `npm run test:validation` — pure-unit, no external data.
@@ -250,10 +250,11 @@ deterministic, round-trippable, and the audit trail is complete.
 
 | Check | Dataset | Metric | Threshold | Status |
 | --- | --- | --- | --- | --- |
-| Checksum determinism | any run | same input → same sha256 across runs | byte-identical | [ ] |
-| FASTA spec compliance | any run | headers match `>name description` spec, 60-char lines | 100% | [ ] |
-| GenBank round-trip | any run | Biopython parse → write → parse → compare SeqRecord | byte-identical | [ ] |
-| GenBank features present | any run | 5'UTR, CDS (+ /translation), 3'UTR, polyA_signal, sig_peptide features | all 5 | [ ] |
+| Checksum determinism | any run | same input → same sha256 across runs | byte-identical | [x] **2026-04-22** — `test_checksum_is_deterministic` + pinned-hash regression |
+| Checksum sensitivity | any run | single-base change flips the hash | yes | [x] **2026-04-22** — `test_checksum_changes_on_single_base_change` |
+| FASTA spec compliance | any run | headers match `>name description` spec, 60-char lines | 100% | (frontend concern, not backend) |
+| GenBank round-trip | any run | Biopython parse → write → parse → compare SeqRecord | byte-identical | [x] `test_construct_genbank.py` + `test_genbank_round_trip_preserves_sequence` |
+| GenBank features present | any run | 5'UTR, CDS (+ /translation), 3'UTR, polyA_signal, sig_peptide features | all 5 | [x] `test_construct_genbank.py::test_genbank_utr_and_polya_features_present` |
 | Audit trail completeness | any run | every stage has a non-null `completed_at`, `run_id`, and tool version | 100% | [ ] |
 | CMO release determinism | any run | same release action → same PO number format + sha stamp | 100% | [ ] |
 | Vet dosing protocol validity | any dog / cat run | protocol references a species-appropriate dose range | 100% | [ ] |
