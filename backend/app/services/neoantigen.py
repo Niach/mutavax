@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import gzip
 import json
+import logging
 import math
 import os
 import re
@@ -28,6 +29,8 @@ import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
@@ -176,6 +179,7 @@ class NeoantigenInputs:
     class_ii_alleles: list[PatientAllele]
     patient_alleles: list[PatientAllele]
     rejected_alleles: list[tuple[PatientAllele, str]]
+    class_i_predictor: str = "NetMHCpan"
 
 
 def _derive_pid_dir_on_disk(workspace_id: str, run_id: str) -> Path:
@@ -1008,8 +1012,9 @@ def start_neoantigen_run(workspace_id: str, run_id: str) -> NeoantigenInputs:
         class_i_raw = [a for a in alleles if a.mhc_class == "I"]
         class_ii_raw = [a for a in alleles if a.mhc_class == "II"]
 
+        class_i_predictor = _class_i_predictor(workspace.species)
         class_i, class_i_rejected = _normalize_alleles_for_pvacseq(
-            class_i_raw, species=workspace.species, algorithm="NetMHCpan"
+            class_i_raw, species=workspace.species, algorithm=class_i_predictor
         )
         class_ii, class_ii_rejected = _normalize_alleles_for_pvacseq(
             class_ii_raw, species=workspace.species, algorithm="NetMHCIIpan"
@@ -1060,6 +1065,7 @@ def start_neoantigen_run(workspace_id: str, run_id: str) -> NeoantigenInputs:
         class_ii_alleles=class_ii,
         patient_alleles=alleles,
         rejected_alleles=rejected_alleles,
+        class_i_predictor=class_i_predictor,
     )
 
 
@@ -1070,6 +1076,46 @@ def start_neoantigen_run(workspace_id: str, run_id: str) -> NeoantigenInputs:
 
 def _pvacseq_binary() -> str:
     return os.getenv("PVACSEQ_BINARY", "pvacseq")
+
+
+# Class-I predictor selector. NetMHCpan is the clinical-grade default;
+# MHCflurry and MHCflurryEL are license-free Apache-2 alternatives
+# bundled with pvactools. Validated to match NetMHCpan AUC = 1.000 on
+# the canonical TAA benchmark (see validation.md → Stage 5).
+#
+# The toggle is env-only for now — swapping predictors is a release-
+# level decision, not a per-workspace one; every workspace in a
+# release should be comparable under the same predictor.
+_ALLOWED_CLASS_I_PREDICTORS = frozenset(
+    {"NetMHCpan", "MHCflurry", "MHCflurryEL"}
+)
+
+
+def _class_i_predictor(species: str) -> str:
+    """Return the pvacseq class-I predictor name for this species.
+
+    MHCflurry only supports human HLA alleles; for canine (DLA) or
+    feline (FLA) workspaces we fall back to NetMHCpan regardless of
+    the env override — the operator cannot swap a predictor that
+    doesn't know the species' alleles."""
+    override = (os.getenv("CANCERSTUDIO_CLASS_I_PREDICTOR") or "").strip()
+    if not override:
+        return "NetMHCpan"
+    if override not in _ALLOWED_CLASS_I_PREDICTORS:
+        logger.warning(
+            "CANCERSTUDIO_CLASS_I_PREDICTOR=%r not recognised "
+            "(expected one of %s); falling back to NetMHCpan",
+            override, sorted(_ALLOWED_CLASS_I_PREDICTORS),
+        )
+        return "NetMHCpan"
+    if species.lower() != "human" and override != "NetMHCpan":
+        logger.warning(
+            "Class-I predictor %r ignored for species=%r: MHCflurry "
+            "only supports human HLA alleles. Using NetMHCpan.",
+            override, species,
+        )
+        return "NetMHCpan"
+    return override
 
 
 def _pvacseq_threads() -> int:
@@ -1963,10 +2009,13 @@ def run_neoantigen(workspace_id: str, run_id: str) -> None:
         if inputs.class_i_alleles:
             progress_cb(20, NeoantigenRuntimePhase.RUNNING_CLASS_I)
             class_i_end = 55 if inputs.class_ii_alleles else 85
+            command_log.append(
+                f"# class-I predictor: {inputs.class_i_predictor}"
+            )
             _run_pvacseq(
                 inputs=inputs,
                 alleles=inputs.class_i_alleles,
-                predictor="NetMHCpan",
+                predictor=inputs.class_i_predictor,
                 output_dir=class_i_dir,
                 epitope_flag="-e1",
                 epitope_lengths=CLASS_I_EPITOPE_LENGTHS,

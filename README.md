@@ -186,6 +186,7 @@ Local overrides live in `.env` — see `.env.example` for the full list. The com
 - `REFERENCE_*_FASTA` — hand-built reference FASTAs per species
 - `CANCERSTUDIO_PON_GRCH38_VCF` — panel-of-normals override (default `${CANCERSTUDIO_DATA_ROOT}/references/pon/grch38/1000g_pon.ensembl.vcf.gz`; set empty to disable)
 - `CANCERSTUDIO_PVACSEQ_THREADS` — pvacseq parallelism (default `min(cpu_count, 8)`)
+- `CANCERSTUDIO_CLASS_I_PREDICTOR` — class-I binding predictor. Default `NetMHCpan` (DTU-licensed, requires the binary in `/tools/src/netMHCpan-4.2/`). Set to `MHCflurry` or `MHCflurryEL` to use the license-free openvax predictor instead — validated to match NetMHCpan AUC = 1.000 on the canonical TAA benchmark. Ignored for non-human species (MHCflurry has no DLA/FLA allele data). Class-II still requires NetMHCIIpan regardless.
 
 Alignment compute knobs (chunk size, per-chunk aligner threads, samtools sort memory, parallel chunks) are tunable from the UI's Compute Settings drawer on the alignment stage — no env file edit needed. They persist to `${CANCERSTUDIO_DATA_ROOT}/settings.json`.
 

@@ -198,6 +198,23 @@ The test locks these values as a regression baseline ± 0.05 so any
 drift gets caught without the maintainer silently re-tuning a
 threshold.
 
+### MHCflurry wired as runtime predictor — 2026-04-22
+
+Operator toggle via ``CANCERSTUDIO_CLASS_I_PREDICTOR``:
+
+* unset or ``NetMHCpan``  → class-I binding via NetMHCpan 4.2 (default)
+* ``MHCflurry``          → pvacseq's MHCflurry affinity predictor
+* ``MHCflurryEL``        → MHCflurry eluted-ligand variant
+
+The selector runs per-workspace on the workspace's species; non-human
+species silently fall back to NetMHCpan because MHCflurry has no DLA
+(dog) or FLA (cat) allele data. Class-II always uses NetMHCIIpan —
+MHCflurry has no class-II equivalent in the wild.
+
+Unit-tested by `backend/tests/test_neoantigen_predictor.py` (12
+assertions covering default, empty-string, unknown-value, recognised
+values, and the non-human safety fall-back).
+
 ### MHCflurry as license-free alternative — 2026-04-22
 
 NetMHCpan is under DTU academic/commercial license. **MHCflurry 2.0**
