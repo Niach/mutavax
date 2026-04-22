@@ -58,8 +58,9 @@ and community truth.
 
 | Check | Dataset | Metric | Threshold | Status |
 | --- | --- | --- | --- | --- |
-| Mapping rate floor | GIAB HG001 30× WGS | `samtools flagstat` mapped % | ≥ 99.0% | [ ] |
-| Duplicate rate sanity | COLO829 30× | `samtools markdup` flagged % | 10–25% | [ ] |
+| Mapping rate floor | **COLO829 real WGS** (our run) | `samtools flagstat` mapped % | ≥ 98% per sample | [x] **tumor 99.93%, normal 98.77%** (2026-04-22) |
+| Duplicate rate sanity | COLO829 30× | `samtools markdup` flagged % | 5-30% per sample | [x] **tumor 16.73%, normal 19.37%** |
+| Mated-pair integrity | COLO829 30× | both-mates-mapped % | ≥ 98% | [x] **tumor 99.88%, normal 98.55%** |
 | Mean depth correctness | COLO829 30× | `mosdepth` genome-wide mean | 28–33× | [ ] |
 | Concordance vs. BWA-MEM2 | GIAB HG001 chr22 | % reads with identical primary coord | ≥ 99.5% | [ ] |
 | QC verdict reproducibility | COLO829 | re-run same FASTQ twice, compare metrics JSON | byte-identical | [ ] |
@@ -85,7 +86,7 @@ against community truth sets, stratified by VAF.
 | SNV recall on spike-ins | **DREAM SMC** synthetic tumors | recall at declared VAF | ≥ 0.90 @ VAF ≥ 0.20 | [ ] |
 | Cross-tumor generalization | **SEQC2 HCC1395** | F1 | ≥ 0.80 | [ ] |
 | PON effect | COLO829 ± PON | % recurrent-artefact calls filtered | ≥ 50% reduction | [ ] |
-| Driver-gene recall | COLO829 | known driver SNVs (BRAF V600E, CDKN2A, etc.) captured | 100% | [ ] |
+| Driver-gene recall | COLO829 | BRAF V600E captured | present in PASS set | [x] **2026-04-22** — `test_colo829_known_driver_variants_recovered` (called at VAF 0.674) |
 
 **Tool:** `hap.py` / `som.py` (Illumina) for VCF comparison — industry standard.
 

@@ -233,6 +233,26 @@ def test_colo829_stage3_snv_f1_at_vaf_10() -> None:
     )
 
 
+@pytest.mark.skipif(
+    not (TRUTH_VCF.is_file() and OURS_VCF.is_file()),
+    reason=_MISSING_REASON,
+)
+def test_colo829_known_driver_variants_recovered() -> None:
+    """Driver-gene recall: COLO829 is a well-characterised melanoma
+    cell line whose canonical driver — BRAF V600E — must be in our
+    PASS call set. A pipeline that reports F1 ≥ 0.85 overall but
+    drops the headline driver is a pipeline nobody will trust."""
+    ours = _load_ours_snvs(OURS_VCF, vaf_min=None)
+    # BRAF V600E on GRCh38: chr7:140,753,336 A>T. Confirmed in SMaHT
+    # v1.0 truth set at VAF_Ill=0.659 (heterozygous).
+    braf_v600e = SnvKey("7", 140_753_336, "A", "T")
+    assert braf_v600e in ours, (
+        "COLO829's canonical BRAF V600E driver missing from our PASS "
+        "SNV calls. This is the single variant a melanoma-aware "
+        "bioinformatician would look for first."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Unit tests for the helpers — run on every CI invocation regardless of
 # benchmark staging. These are what `npm run test:validation` exercises
