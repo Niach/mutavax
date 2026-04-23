@@ -14,6 +14,8 @@ COPY package.json package-lock.json next.config.ts tsconfig.json postcss.config.
 COPY eslint.config.mjs ./
 COPY public ./public
 COPY src ./src
+# src/lib/demo-fixtures.ts imports JSON fixtures from this path via ../../backend.
+COPY backend/app/data ./backend/app/data
 RUN npm run build
 
 FROM node:22-alpine AS runner
