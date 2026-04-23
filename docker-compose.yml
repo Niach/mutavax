@@ -1,61 +1,60 @@
-# Dev orchestration for the all-in-one backend image.
+# cancerstudio — paste-ready self-hosted compose file.
 #
-#   docker compose build      # build cancerstudio-backend:dev
-#   docker compose up         # start FastAPI on :8000 with GPU + hot reload
-#   docker compose run --rm backend pytest -m "not integration and not real_data"
+# Quick start (no clone, no build):
+#   1. mkdir ~/cancerstudio && cd ~/cancerstudio
+#   2. curl -fsSL https://raw.githubusercontent.com/niach/cancerstudio/main/docker-compose.yml -o docker-compose.yml
+#   3. docker compose up -d
+#   4. open http://localhost:3000
 #
-# Expected host-side layout (override via .env if you want a different root):
-#   ${CANCERSTUDIO_DATA_ROOT:-$HOME/cancerstudio-data}/
-#     ├── inbox/                  # user drops FASTQ/BAM/CRAM here
-#     ├── workspaces/             # per-workspace artifacts
-#     ├── references/             # reference FASTAs + indexes
-#     └── app.db                  # SQLite
+# Data and the SQLite DB live under ./data (override with CANCERSTUDIO_DATA_ROOT
+# in .env). Drop tumor/normal FASTQ/BAM/CRAM files into ./data/inbox/.
 #
-# On a machine without NVIDIA drivers, remove the `deploy:` block so the
-# backend comes up in CPU-only mode (variant calling falls back to GATK).
+# Defaults to MHCflurry as the class-I binding predictor so a fresh install
+# works on human samples without any DTU license download. For dog/cat or for
+# class-II scoring, place netMHCpan-4.2/ and netMHCIIpan-4.3/ under
+# ./data/netmhc/ and set CANCERSTUDIO_CLASS_I_PREDICTOR=NetMHCpan in .env.
+#
+# GPU-accelerated variant calling (NVIDIA Parabricks) is opt-in:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
 services:
   backend:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-    image: cancerstudio-backend:dev
-    container_name: cancerstudio-backend
-    command:
-      - uvicorn
-      - app.main:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --reload
+    image: ghcr.io/niach/cancerstudio-backend:latest
+    restart: unless-stopped
     environment:
       CANCERSTUDIO_APP_DATA_DIR: /app-data
-      CANCERSTUDIO_INBOX_DIR: /inbox
-      CANCERSTUDIO_VEP_CACHE_DIR: /vep-cache
       CANCERSTUDIO_NETMHC_DIR: /tools/src
       CANCERSTUDIO_NETMHCPAN_BIN: /tools/src/netMHCpan-4.2/netMHCpan
       CANCERSTUDIO_NETMHCIIPAN_BIN: /tools/src/netMHCIIpan-4.3/netMHCIIpan
-      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
-    ports:
-      - "127.0.0.1:8000:8000"
+      CANCERSTUDIO_CLASS_I_PREDICTOR: ${CANCERSTUDIO_CLASS_I_PREDICTOR:-MHCflurry}
+      CANCERSTUDIO_REVIEW_MODEL: ${CANCERSTUDIO_REVIEW_MODEL:-anthropic/claude-opus-4-7}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:3000}
+    env_file:
+      - path: .env
+        required: false
     volumes:
-      - ${CANCERSTUDIO_DATA_ROOT:-~/cancerstudio-data}:/app-data
-      - ${CANCERSTUDIO_DATA_ROOT:-~/cancerstudio-data}/inbox:/inbox
-      - ${CANCERSTUDIO_DATA_ROOT:-~/cancerstudio-data}/vep-cache:/vep-cache
-      # NetMHCpan / NetMHCIIpan are externally licensed (DTU) — the host dir
-      # lands at /tools/src inside the container so DTU's stock wrapper scripts
-      # (which hardcode NMHOME=/tools/src/netMHCpan-4.2 etc.) work with zero edits.
-      - ${CANCERSTUDIO_NETMHC_DIR:-${CANCERSTUDIO_DATA_ROOT:-~/cancerstudio-data}/netmhc}:/tools/src:ro
-      # Source bind mounts for hot reload during dev. In production builds
-      # the COPYd /app/app layer is authoritative; these just shadow it.
-      - ./backend/app:/app/app
-      - ./backend/tests:/app/tests
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+      - ${CANCERSTUDIO_DATA_ROOT:-./data}:/app-data
+      # NetMHCpan / NetMHCIIpan are externally licensed (DTU). The host dir
+      # lands at /tools/src inside the container so DTU's stock wrapper
+      # scripts (which hardcode NMHOME=/tools/src/netMHCpan-4.2 etc.) work
+      # with zero edits. Empty on a fresh install — stage 5 preflight refuses
+      # to start and tells you which file is missing if you opt into NetMHCpan.
+      - ${CANCERSTUDIO_NETMHC_DIR:-${CANCERSTUDIO_DATA_ROOT:-./data}/netmhc}:/tools/src:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  web:
+    image: ghcr.io/niach/cancerstudio-web:latest
     restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      INTERNAL_API_URL: http://backend:8000
+      NODE_ENV: production
+    ports:
+      - "3000:3000"

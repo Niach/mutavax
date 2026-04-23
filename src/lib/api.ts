@@ -87,11 +87,15 @@ import type {
   AlleleTypingKind,
 } from "@/lib/types";
 
+// Browser default: same-origin `/backend/*` proxied to the FastAPI container
+// by the Next.js rewrite in next.config.ts. Self-hosters only expose port 3000.
+// SSR default: direct hop to the backend over the Docker network.
+// Host-mode dev (native uvicorn + `next dev`): set NEXT_PUBLIC_API_URL=http://localhost:8000.
 const PUBLIC_API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_URL ?? "/backend";
 const API_BASE =
   typeof window === "undefined"
-    ? process.env.INTERNAL_API_URL ?? PUBLIC_API_BASE
+    ? process.env.INTERNAL_API_URL ?? "http://backend:8000"
     : PUBLIC_API_BASE;
 
 type WorkspaceFileDto = {

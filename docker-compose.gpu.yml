@@ -1,0 +1,16 @@
+# Opt-in overlay: enables NVIDIA GPU passthrough for the backend so stage 3
+# variant calling can use Parabricks (`pbrun`). Requires the NVIDIA Container
+# Toolkit on the host.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+
+services:
+  backend:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

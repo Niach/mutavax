@@ -6,7 +6,7 @@
 
 Sample your DNA. Compute your cure. cancerstudio designs a personalized mRNA vaccine from the mutations in *your* tumor — for dogs, cats, and humans.
 
-**Site:** <https://niach.github.io/cancerstudio/> &nbsp;•&nbsp; **Status:** open source · self-hosted · v0.4
+**Site:** <https://cancerstudio.org> &nbsp;•&nbsp; **Status:** open source · self-hosted · v0.4
 
 | Pick a species | Stage the samples | Run alignment | Find the mutations | Read what they mean |
 | --- | --- | --- | --- | --- |
@@ -32,7 +32,7 @@ Sample your DNA. Compute your cure. cancerstudio designs a personalized mRNA vac
 | 2 | Alignment | **Live** — chunked stop-and-resume on commodity hardware | strobealign, samtools |
 | 3 | Variant Calling | **Live** — karyogram + plain-English filter buckets, Broad 1000G panel-of-normals on human runs | GATK Mutect2 (GPU via NVIDIA Parabricks when available) |
 | 4 | Annotation | **Live** — cancer-gene cards + lollipop plot | Ensembl VEP 111 |
-| 5 | Neoantigen Prediction | **Live** — binding buckets + peptide × allele heatmap + antigen funnel | pVACseq 5.4.0, NetMHCpan 4.2, NetMHCIIpan 4.3 |
+| 5 | Neoantigen Prediction | **Live** — binding buckets + peptide × allele heatmap + antigen funnel | pVACseq 5.4.0, MHCflurry 2.0 (default, license-free) or NetMHCpan 4.2, NetMHCIIpan 4.3 |
 | 6 | Epitope Selection | **Live** — 8-slot cassette curation UI | pVACview + custom scoring |
 | 7 | mRNA Construct Design | **Live** — molecule hero + λ slider trading CAI vs. MFE + codon swap preview + 7/7 manufacturability checks | LinearDesign, DNAchisel, ViennaRNA |
 | 8 | Construct Output | **Live** — color-coded FASTA with FASTA/GenBank/JSON downloads, CMO release flow, vet dosing, audit trail | pVACvector, Biopython |
@@ -43,7 +43,7 @@ Every live stage is pause-and-resumable. Progress is surfaced honestly, tool nam
 
 ### Inputs
 
-Tumor + matched-normal sequencing for one patient. **FASTQ, BAM, or CRAM.** ≥30× coverage for confident somatic variant calling. Drop the files in `~/cancerstudio-data/inbox/` and the app registers them into a workspace.
+Tumor + matched-normal sequencing for one patient. **FASTQ, BAM, or CRAM.** ≥30× coverage for confident somatic variant calling.
 
 ### Hardware
 
@@ -51,94 +51,142 @@ Tumor + matched-normal sequencing for one patient. **FASTQ, BAM, or CRAM.** ≥3
 | --- | --- |
 | RAM | 64 GB — strobealign indexing peaks around 31 GB free |
 | CPU | 16 cores |
-| Disk | 1 TB SSD — a 30× human WGS costs ~400 GB in the workspace (deduped BAMs + FASTQs); multiple cases share the ~55 GB reference + VEP cache + PON footprint |
-| GPU | NVIDIA Ampere+ (RTX 3090 / 4090 / A-series / H-series) — Parabricks accelerates stage 3 Mutect2 ~10× |
+| Disk | 1 TB SSD — a 30× human WGS costs ~400 GB (deduped BAMs + FASTQs); multiple cases share the ~55 GB reference + VEP cache + PON footprint |
+| GPU | NVIDIA Ampere+ (RTX 3090 / 4090 / A-series / H-series) — Parabricks accelerates stage 3 Mutect2 ~10× (opt-in) |
 | OS | Linux |
 
-The backend — FastAPI, samtools, pigz, strobealign, GATK, Parabricks, VEP, pVACtools — ships in one Docker image layered on `nvcr.io/nvidia/clara/clara-parabricks:4.7.0-1`. The Next.js frontend runs on the host. No cloud, no object storage.
+Everything runs in two Docker containers: the backend image (FastAPI + samtools + strobealign + GATK + VEP + pVACtools + MHCflurry + Parabricks base, ~10 GB) and the frontend image (Next.js standalone, ~300 MB). No cloud, no object storage.
 
-### Licenses
+## Getting started
 
-Two externally-licensed binaries must be installed before stage 5 runs. Both are free for academic use, but **you bring your own keys** — we can't redistribute them.
+You don't need to clone this repo. Paste the compose file below, run `docker compose up -d`, open the browser.
 
-- **NetMHCpan 4.2** — DTU Health Tech, <https://services.healthtech.dtu.dk/services/NetMHCpan-4.2/>
-- **NetMHCIIpan 4.3** — DTU Health Tech, <https://services.healthtech.dtu.dk/services/NetMHCIIpan-4.3/>
+### 1. Install Docker
 
-Fill the academic-license form, agree to the DTU terms, and download the Linux tarball. Turnaround is usually same-day. Commercial license (if you ever ship the product for pay) is a separate channel at `health-software@dtu.dk`. Without the binaries, stage 5 preflight refuses to start and tells you exactly which file is missing.
-
-### Reference
-
-Species reference genome — GRCh38 (human), UU_Cfam_GSD_1.0 (dog), or Felis_catus_9.0 (cat). Auto-downloaded on first alignment. If your workstation has less than 35 GB of free RAM, run `bash scripts/prepare-reference.sh` once beforehand to index outside the live app.
-
-### Panel-of-normals (human only)
-
-Human workspaces apply the Broad's 1000 Genomes panel-of-normals to Mutect2 so recurrent artefacts and low-frequency germline variants get filtered at call time. The Broad ships the VCF in UCSC convention (`chr1…chrM`); cancerstudio uses Ensembl GRCh38 (`1…MT`), so it auto-downloads the VCF on first variant-calling run, renames + re-orders contigs to match the reference FAI, and builds the Parabricks prepon sidecar for GPU runs. Lives under `~/cancerstudio-data/references/pon/grch38/`. Set `CANCERSTUDIO_PON_GRCH38_VCF=""` in `.env` to disable, or point at a custom VCF path to override.
-
-Dog and cat workspaces skip the PON (no curated canine / feline panel exists yet); the Variant Calling screen shows a muted "No panel-of-normals available for &lt;species&gt;" caption instead.
-
-## Install
-
-### 1. Docker
-
-On Ubuntu / Debian / Linux Mint:
+Ubuntu / Debian / Linux Mint:
 
 ```bash
 curl -fsSL https://get.docker.com | sudo bash
 sudo usermod -aG docker "$USER"
 ```
 
-On macOS or Windows, install [Docker Desktop](https://www.docker.com/products/docker-desktop). For GPU variant calling on Linux, also install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+macOS / Windows: install [Docker Desktop](https://www.docker.com/products/docker-desktop). For GPU-accelerated stage 3 variant calling on Linux, also install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
-### 2. Clone and build
+### 2. Create the compose file
 
 ```bash
-git clone https://github.com/Niach/cancerstudio.git
-cd cancerstudio
-npm install
-docker compose build                    # ~10 GB image, first build is slow
+mkdir ~/cancerstudio && cd ~/cancerstudio
+curl -fsSL https://raw.githubusercontent.com/niach/cancerstudio/main/docker-compose.yml -o docker-compose.yml
 ```
 
-### 3. Drop the DTU binaries in place
+The file pulls pre-built images from GHCR (`ghcr.io/niach/cancerstudio-backend` and `ghcr.io/niach/cancerstudio-web`) — no build step on your machine.
 
-Extract the tarballs so the directory layout looks like this:
+### 3. Create a `.env` (optional)
+
+Most users don't need one. Add it if you want to customize anything:
+
+```bash
+cat > .env <<'EOF'
+# Where workspace artifacts, references, and the SQLite DB live. Default: ./data
+# CANCERSTUDIO_DATA_ROOT=./data
+
+# Stage 9 AI review — only needed if you want the LLM review feature.
+# ANTHROPIC_API_KEY=
+
+# Switch the class-I predictor back to DTU NetMHCpan (default is MHCflurry).
+# CANCERSTUDIO_CLASS_I_PREDICTOR=NetMHCpan
+EOF
+```
+
+See [.env.example](.env.example) for the full list of overrides.
+
+### 4. NetMHC binaries (optional for humans)
+
+The compose file ships with **MHCflurry** as the default class-I predictor — a license-free alternative to NetMHCpan, validated to match NetMHCpan AUC = 1.000 on the canonical tumor-antigen benchmark. Human users running stages 1–5 class-I only need nothing else.
+
+Opt in to the DTU NetMHC stack if you want:
+
+- **non-human species** (dog DLA / cat FLA — MHCflurry has no canine or feline training data), **or**
+- **class-II neoantigen scoring** (NetMHCIIpan has no license-free equivalent).
+
+Both are free for academic use; commercial usage needs a separate DTU license. Fill the forms, download the Linux tarballs:
+
+- NetMHCpan 4.2 — <https://services.healthtech.dtu.dk/services/NetMHCpan-4.2/>
+- NetMHCIIpan 4.3 — <https://services.healthtech.dtu.dk/services/NetMHCIIpan-4.3/>
+
+Extract them so the layout is:
 
 ```
-~/cancerstudio-data/netmhc/
+./data/netmhc/
 ├── netMHCpan-4.2/
 └── netMHCIIpan-4.3/
 ```
 
-That path is bind-mounted into the container at `/tools/src:ro`, which matches the stock wrapper scripts' hardcoded `NMHOME` — no script edits required. Override with `CANCERSTUDIO_NETMHC_DIR=/some/other/path` in `.env` if you want them elsewhere.
+That dir is mounted at `/tools/src:ro` inside the backend container, which matches the stock DTU wrapper scripts' hardcoded `NMHOME` — no script edits.
 
-### 4. Run
+### 5. Drop in your DNA
+
+The backend auto-creates `./data/inbox/`, `./data/workspaces/`, `./data/references/`, and `./data/vep-cache/` on first start. Drop your tumor + normal FASTQ / BAM / CRAM pair into `./data/inbox/` and the app registers them into a workspace.
+
+### 6. Start
 
 ```bash
-npm run dev:all                         # backend on :8000 + frontend on :3000
+docker compose up -d
 ```
 
-Open <http://localhost:3000>. Create a workspace, pick a species, drop in your FASTQs, follow the stages.
+Open <http://localhost:3000>. Create a workspace, pick a species, follow the stages.
+
+**LAN access:** The web UI binds to `0.0.0.0:3000`, so any other machine on your network can hit `http://<server-ip>:3000`. Put it behind Caddy/Traefik if you want TLS.
+
+**GPU-accelerated stage 3 (opt-in):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/niach/cancerstudio/main/docker-compose.gpu.yml -o docker-compose.gpu.yml
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+```
+
+Requires NVIDIA drivers + the NVIDIA Container Toolkit.
+
+### Reference genomes
+
+Species reference — GRCh38 (human), UU_Cfam_GSD_1.0 (dog), or Felis_catus_9.0 (cat) — is auto-downloaded on the first alignment run. Cached under `./data/references/`, shared across workspaces.
+
+### Panel-of-normals (human only)
+
+Human workspaces apply the Broad's 1000 Genomes panel-of-normals to Mutect2 to filter recurrent artefacts and low-frequency germline variants. The VCF is auto-downloaded, renamed from UCSC to Ensembl contigs, and indexed on first variant-calling run. Lives under `./data/references/pon/grch38/`. Set `CANCERSTUDIO_PON_GRCH38_VCF=""` in `.env` to disable.
+
+Dog and cat workspaces skip the PON (no curated canine / feline panel exists yet).
 
 ## Troubleshooting
 
-**Alignment refuses to start with "insufficient memory."** Indexing the human reference peaks around 31 GB of RAM. Either free some up or run `bash scripts/prepare-reference.sh` once, which builds the index outside the live app.
+**Alignment refuses to start with "insufficient memory."** Indexing the human reference peaks around 31 GB of RAM. Either free some up, or drop a prebuilt index into `./data/references/` (see the contributors section below).
 
-**Stage 5 preflight says a NetMHC binary is missing.** The DTU tarballs aren't in the mount. Check `ls ~/cancerstudio-data/netmhc/` — you should see `netMHCpan-4.2/` and `netMHCIIpan-4.3/` as directories, not tarballs.
+**Stage 5 preflight says a NetMHC binary is missing.** You set `CANCERSTUDIO_CLASS_I_PREDICTOR=NetMHCpan` but didn't drop the tarballs in. Check `ls ./data/netmhc/` — should contain `netMHCpan-4.2/` and `netMHCIIpan-4.3/` as directories, not tarballs.
 
-**Stage 5 finishes with zero peptides.** Your patient alleles weren't recognized by pvacseq. The Patient MHC panel now marks these with a strikethrough + `SKIPPED` pill and the reason. For dog, pvacseq only recognizes a handful of DLA-88 alleles and zero class II alleles.
+**Stage 5 finishes with zero peptides.** Your patient alleles weren't recognized by pvacseq. The Patient MHC panel marks these with a strikethrough + `SKIPPED` pill. For dog, pvacseq only recognizes a handful of DLA-88 alleles and zero class II alleles.
 
 **Annotation complains about missing TSL fields.** Rerun stage 4 on the workspace — older annotations predate the `--tsl` flag and need refreshing.
 
-## For developers
+## For contributors
 
-Frontend: Next.js 15, React 19, TypeScript, Tailwind. Backend: FastAPI + SQLAlchemy, all bioinformatics tools in one Docker image, SQLite under `~/cancerstudio-data`.
-
-Dev workflow:
+Clone the repo for source-level work:
 
 ```bash
-npm run backend            # docker compose up — FastAPI on :8000
-npm run dev                # Next.js on :3000
-npm run dev:all            # both, concurrently
+git clone https://github.com/niach/cancerstudio.git
+cd cancerstudio
+npm install
 ```
+
+Frontend: Next.js 15, React 19, TypeScript, Tailwind. Backend: FastAPI + SQLAlchemy, all bioinformatics tools in one Docker image, SQLite under `./data/`.
+
+Dev workflow — hot-reload the backend from the cloned source, run the Next.js dev server on the host:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up    # backend with --reload on :8000
+npm run dev                                                          # next dev on :3000
+```
+
+Set `NEXT_PUBLIC_API_URL=http://localhost:8000` in your `.env` for this workflow so the browser hits the native uvicorn instead of the same-origin `/backend` proxy.
 
 Fast tests (lint + TS + backend non-integration):
 
@@ -179,16 +227,9 @@ WORKSPACE_ID=$(docker exec cancerstudio-backend python /tmp/seed.py)
 node scripts/take-screenshots.mjs --stages=6,7,8 "$WORKSPACE_ID"
 ```
 
-Local overrides live in `.env` — see `.env.example` for the full list. The common ones:
+Alignment compute knobs (chunk size, per-chunk aligner threads, samtools sort memory, parallel chunks) are tunable from the UI's Compute Settings drawer on the alignment stage — no env file edit needed. They persist to `./data/settings.json`.
 
-- `CANCERSTUDIO_DATA_ROOT` — where workspace artifacts and references live (default `~/cancerstudio-data`)
-- `CANCERSTUDIO_NETMHC_DIR` — where the DTU binaries live (default `${CANCERSTUDIO_DATA_ROOT}/netmhc`)
-- `REFERENCE_*_FASTA` — hand-built reference FASTAs per species
-- `CANCERSTUDIO_PON_GRCH38_VCF` — panel-of-normals override (default `${CANCERSTUDIO_DATA_ROOT}/references/pon/grch38/1000g_pon.ensembl.vcf.gz`; set empty to disable)
-- `CANCERSTUDIO_PVACSEQ_THREADS` — pvacseq parallelism (default `min(cpu_count, 8)`)
-- `CANCERSTUDIO_CLASS_I_PREDICTOR` — class-I binding predictor. Default `NetMHCpan` (DTU-licensed, requires the binary in `/tools/src/netMHCpan-4.2/`). Set to `MHCflurry` or `MHCflurryEL` to use the license-free openvax predictor instead — validated to match NetMHCpan AUC = 1.000 on the canonical TAA benchmark. Ignored for non-human species (MHCflurry has no DLA/FLA allele data). Class-II still requires NetMHCIIpan regardless.
-
-Alignment compute knobs (chunk size, per-chunk aligner threads, samtools sort memory, parallel chunks) are tunable from the UI's Compute Settings drawer on the alignment stage — no env file edit needed. They persist to `${CANCERSTUDIO_DATA_ROOT}/settings.json`.
+Full list of env overrides lives in [.env.example](.env.example).
 
 ## Credits
 
@@ -197,6 +238,7 @@ cancerstudio is inspired by [Paul Conyngham's 2025 personalized mRNA vaccine for
 Built on the shoulders of:
 
 - [pVACtools](https://github.com/griffithlab/pVACtools) (Griffith Lab)
+- [MHCflurry](https://github.com/openvax/mhcflurry) (openvax) — license-free class-I binding predictor
 - [NetMHCpan / NetMHCIIpan](https://services.healthtech.dtu.dk/) (DTU Health Tech)
 - [Ensembl VEP](https://www.ensembl.org/info/docs/tools/vep/) + its pVACseq-ready plugins (Frameshift, Wildtype, Downstream)
 - [GATK Mutect2](https://gatk.broadinstitute.org/) and [NVIDIA Parabricks](https://www.nvidia.com/en-us/clara/genomics/)
