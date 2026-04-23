@@ -1,4 +1,5 @@
 import type {
+  AiReviewStageSummary,
   AlignmentStageSummary,
   AnnotationStageSummary,
   ConstructOutputStageSummary,
@@ -45,7 +46,8 @@ export function getPipelinePolicy(
   neoantigenSummary?: NeoantigenStageSummary | null,
   epitopeSummary?: EpitopeStageSummary | null,
   constructSummary?: ConstructStageSummary | null,
-  constructOutputSummary?: ConstructOutputStageSummary | null
+  constructOutputSummary?: ConstructOutputStageSummary | null,
+  aiReviewSummary?: AiReviewStageSummary | null
 ): PipelinePolicyMap {
   const latestActionableStage =
     workspace.ingestion.readyForAlignment && alignmentSummary.status !== "blocked"
@@ -262,6 +264,32 @@ export function getPipelinePolicy(
           : released
             ? "Construct has been released to the manufacturer."
             : "Download the FASTA bundle and send for synthesis.",
+      };
+      continue;
+    }
+
+    if (stage.id === "ai-review") {
+      const released = constructOutputSummary?.status === "released";
+      const reviewStatus = aiReviewSummary?.status ?? "blocked";
+      const hasDecision = Boolean(aiReviewSummary?.decision);
+
+      policies[stage.id] = {
+        stage,
+        visible: true,
+        enterable: released,
+        actionable: released && reviewStatus !== "blocked",
+        blockedReason: !released
+          ? "Release the construct output before requesting the AI review."
+          : aiReviewSummary?.blockingReason ?? null,
+        nextStep: !released
+          ? "Release the construct output first."
+          : reviewStatus === "scaffolded"
+            ? "Set a provider API key on the backend to enable the review."
+            : hasDecision
+              ? "Review signed — ready to hand off."
+              : reviewStatus === "completed"
+                ? "Accept or override the reviewer's verdict."
+                : "Ask Claude Opus 4.7 for a second pass.",
       };
       continue;
     }

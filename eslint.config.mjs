@@ -16,6 +16,9 @@ const eslintConfig = defineConfig([
     "playwright-report/**",
     "test-results/**",
     ".run/**",
+    // Python virtualenv sometimes lives inside the repo root.
+    ".venv/**",
+    "venv/**",
   ]),
 ]);
 

@@ -20,6 +20,7 @@ class WorkspaceRecord(Base):
     epitope_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     construct_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     construct_output_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ai_review_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

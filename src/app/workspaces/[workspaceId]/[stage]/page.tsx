@@ -30,6 +30,7 @@ export default async function WorkspaceStagePage({
   let epitopeSummary;
   let constructSummary;
   let constructOutputSummary;
+  let aiReviewSummary;
 
   try {
     [
@@ -42,6 +43,7 @@ export default async function WorkspaceStagePage({
       epitopeSummary,
       constructSummary,
       constructOutputSummary,
+      aiReviewSummary,
     ] = await Promise.all([
       api.listWorkspaces(),
       api.getWorkspace(workspaceId),
@@ -52,6 +54,7 @@ export default async function WorkspaceStagePage({
       api.getEpitopeStageSummary(workspaceId),
       api.getConstructStageSummary(workspaceId),
       api.getConstructOutputSummary(workspaceId),
+      api.getAiReviewSummary(workspaceId),
     ]);
   } catch (error) {
     if (error instanceof Error && error.message.toLowerCase().includes("not found")) {
@@ -69,7 +72,8 @@ export default async function WorkspaceStagePage({
     neoantigenSummary,
     epitopeSummary,
     constructSummary,
-    constructOutputSummary
+    constructOutputSummary,
+    aiReviewSummary
   );
   const redirectedFromStageId = comingSoon && isPipelineStageId(comingSoon) ? comingSoon : null;
   if (!policy[stage].enterable) {
@@ -92,6 +96,7 @@ export default async function WorkspaceStagePage({
       initialEpitopeSummary={epitopeSummary}
       initialConstructSummary={constructSummary}
       initialConstructOutputSummary={constructOutputSummary}
+      initialAiReviewSummary={aiReviewSummary}
       redirectedFromStageId={redirectedFromStageId}
     />
   );

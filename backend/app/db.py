@@ -195,6 +195,12 @@ def _ensure_schema_updates() -> None:
         "construct_output_config",
         "TEXT",
     )
+    _ensure_column(
+        inspector,
+        "workspaces",
+        "ai_review_config",
+        "TEXT",
+    )
     _ensure_workspace_file_storage_key_not_unique()
 
 

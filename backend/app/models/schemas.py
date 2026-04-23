@@ -1066,3 +1066,122 @@ class ConstructOutputStageSummaryResponse(BaseModel):
 class ConstructOutputAction(BaseModel):
     action: Literal["select_cmo", "release"]
     cmo_id: Optional[str] = None
+
+
+# ── Stage 9 — AI Review (Claude Opus 4.7 via LiteLLM) ──────────────────
+
+
+class AiReviewFinding(BaseModel):
+    severity: Literal["info", "note", "watch", "concern"]
+    title: str
+    detail: str
+
+
+class AiReviewCategory(BaseModel):
+    id: Literal["validity", "safety", "coverage", "manufact"]
+    grade: Literal["A", "B", "C", "D"]
+    verdict: Literal["pass", "watch", "concern"]
+    summary: str
+    findings: List[AiReviewFinding]
+
+
+class AiReviewResult(BaseModel):
+    verdict: Literal["approve", "approve_with_notes", "hold", "block"]
+    confidence: int = Field(ge=0, le=100)
+    headline: str
+    letter: str
+    categories: List[AiReviewCategory]
+    top_risks: List[str]
+    next_actions: List[str]
+    reviewed_at: str
+    model: str
+
+
+class AiReviewDecision(BaseModel):
+    kind: Literal["accept", "override"]
+    at: str
+    reason: Optional[str] = None
+
+
+class AiReviewBriefPeptide(BaseModel):
+    seq: str
+    gene: str
+    mut: Optional[str] = None
+    cls: Optional[str] = None
+    allele: Optional[str] = None
+    ic50_nM: Optional[float] = None
+    vaf: Optional[float] = None
+    cancer_gene: bool = False
+    driver: bool = False
+
+
+class AiReviewBriefVariants(BaseModel):
+    total: int
+    pass_count: int = Field(alias="pass")
+    snv: int
+    indel: int
+    median_vaf: Optional[float] = None
+    tumor_depth: Optional[float] = None
+    normal_depth: Optional[float] = None
+
+    model_config = {"populate_by_name": True}
+
+
+class AiReviewBriefCoverage(BaseModel):
+    alleles: List[str]
+    class_i: int = Field(alias="classI")
+    class_ii: int = Field(alias="classII")
+    unique_genes: List[str] = Field(alias="uniqueGenes")
+
+    model_config = {"populate_by_name": True}
+
+
+class AiReviewBriefConstruct(BaseModel):
+    id: str
+    version: str
+    checksum: str
+    aa_len: int = Field(alias="aaLen")
+    nt_len: int = Field(alias="ntLen")
+    cai: Optional[float] = None
+    gc: Optional[float] = None
+    mfe: Optional[float] = None
+
+    model_config = {"populate_by_name": True}
+
+
+class AiReviewCaseBrief(BaseModel):
+    patient_id: str
+    patient_name: str
+    species: str
+    reference: str
+    variants: AiReviewBriefVariants
+    shortlist: List[AiReviewBriefPeptide]
+    coverage: AiReviewBriefCoverage
+    construct_: AiReviewBriefConstruct = Field(alias="construct")
+
+    model_config = {"populate_by_name": True}
+
+
+class AiReviewStageStatus(str, Enum):
+    BLOCKED = "blocked"
+    SCAFFOLDED = "scaffolded"
+    IDLE = "idle"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class AiReviewStageSummaryResponse(BaseModel):
+    workspace_id: str
+    status: AiReviewStageStatus
+    blocking_reason: Optional[str] = None
+    model: str
+    brief: Optional[AiReviewCaseBrief] = None
+    result: Optional[AiReviewResult] = None
+    decision: Optional[AiReviewDecision] = None
+    last_error: Optional[str] = None
+
+
+class AiReviewAction(BaseModel):
+    action: Literal["run", "accept", "override", "reset"]
+    reason: Optional[str] = None

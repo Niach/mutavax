@@ -1047,6 +1047,24 @@ def store_workspace_construct_output_config(
     workspace.construct_output_config = json.dumps(config)
 
 
+def load_workspace_ai_review_config(workspace: WorkspaceRecord) -> dict:
+    raw = workspace.ai_review_config
+    if raw:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
+        except (TypeError, ValueError):
+            pass
+    return {}
+
+
+def store_workspace_ai_review_config(
+    workspace: WorkspaceRecord, config: dict
+) -> None:
+    workspace.ai_review_config = json.dumps(config)
+
+
 def create_workspace(request: WorkspaceCreateRequest) -> WorkspaceResponse:
     display_name = request.display_name.strip()
     if not display_name:

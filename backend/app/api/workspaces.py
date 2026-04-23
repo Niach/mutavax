@@ -3,6 +3,8 @@ from fastapi.responses import FileResponse
 
 from app.models.schemas import (
     ActiveStageUpdateRequest,
+    AiReviewAction,
+    AiReviewStageSummaryResponse,
     AlignmentStageSummaryResponse,
     AnnotationStageSummaryResponse,
     ConstructDesignUpdate,
@@ -75,6 +77,11 @@ from app.services.construct_design import (
 from app.services.construct_output import (
     load_construct_output_summary,
     update_construct_output,
+)
+from app.services.ai_review import (
+    AiReviewCallError,
+    load_ai_review_summary,
+    update_ai_review,
 )
 from app.services.tool_preflight import (
     ALIGNMENT_TOOLS,
@@ -769,6 +776,43 @@ async def update_construct_output_route(
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
         raise unexpected_workspace_error("Construct output update", error) from error
+
+
+# ----------------------------------------------------------------------------- #
+# Stage 9 — AI Review (Claude Opus 4.7 via LiteLLM)
+# ----------------------------------------------------------------------------- #
+
+
+@router.get(
+    "/{workspace_id}/ai-review",
+    response_model=AiReviewStageSummaryResponse,
+)
+async def get_ai_review_summary(workspace_id: str):
+    try:
+        return load_ai_review_summary(workspace_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("AI review load", error) from error
+
+
+@router.post(
+    "/{workspace_id}/ai-review/action",
+    response_model=AiReviewStageSummaryResponse,
+)
+async def update_ai_review_route(workspace_id: str, request: AiReviewAction):
+    try:
+        return update_ai_review(workspace_id, request)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except AiReviewCallError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise unexpected_workspace_error("AI review update", error) from error
 
 
 @router.get(

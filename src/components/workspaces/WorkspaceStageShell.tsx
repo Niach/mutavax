@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import AiReviewStagePanel from "@/components/workspaces/AiReviewStagePanel";
 import AlignmentStagePanel from "@/components/workspaces/AlignmentStagePanel";
 import AnnotationStagePanel from "@/components/workspaces/AnnotationStagePanel";
 import ConstructDesignStagePanel from "@/components/workspaces/ConstructDesignStagePanel";
@@ -19,6 +20,7 @@ import {
   getVisibleResearchStages,
 } from "@/lib/pipeline-policy";
 import type {
+  AiReviewStageSummary,
   AlignmentStageSummary,
   AnnotationStageSummary,
   ConstructOutputStageSummary,
@@ -49,6 +51,7 @@ interface WorkspaceStageShellProps {
   initialEpitopeSummary: EpitopeStageSummary;
   initialConstructSummary: ConstructStageSummary;
   initialConstructOutputSummary: ConstructOutputStageSummary;
+  initialAiReviewSummary: AiReviewStageSummary;
   redirectedFromStageId: PipelineStageId | null;
 }
 
@@ -63,6 +66,7 @@ export default function WorkspaceStageShell({
   initialEpitopeSummary,
   initialConstructSummary,
   initialConstructOutputSummary,
+  initialAiReviewSummary,
   redirectedFromStageId,
 }: WorkspaceStageShellProps) {
   const [workspace, setWorkspace] = useState(initialWorkspace);
@@ -90,6 +94,9 @@ export default function WorkspaceStageShell({
   const [constructOutputSummary, setConstructOutputSummary] = useState(
     initialConstructOutputSummary
   );
+  const [aiReviewSummary, setAiReviewSummary] = useState(
+    initialAiReviewSummary
+  );
   const stagePolicy = getPipelinePolicy(
     workspace,
     alignmentSummary,
@@ -98,7 +105,8 @@ export default function WorkspaceStageShell({
     neoantigenSummary,
     epitopeSummary,
     constructSummary,
-    constructOutputSummary
+    constructOutputSummary,
+    aiReviewSummary
   );
   const currentStagePolicy = stagePolicy[currentStageId];
   const primaryStages = getVisiblePrimaryStages(stagePolicy);
@@ -351,6 +359,13 @@ export default function WorkspaceStageShell({
                 workspace={workspace}
                 initialSummary={constructOutputSummary}
                 onSummaryChange={setConstructOutputSummary}
+              />
+            ) : currentStageId === "ai-review" ? (
+              <AiReviewStagePanel
+                key={workspace.id}
+                workspace={workspace}
+                initialSummary={aiReviewSummary}
+                onSummaryChange={setAiReviewSummary}
               />
             ) : null}
           </div>

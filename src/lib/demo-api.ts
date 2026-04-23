@@ -14,6 +14,7 @@ import {
   DEMO_WORKSPACE,
 } from "@/lib/demo-fixtures";
 import type {
+  AiReviewStageSummary,
   AlignmentSettings,
   AlignmentStageSummary,
   AnnotationStageSummary,
@@ -30,6 +31,18 @@ import type {
   VariantCallingStageSummary,
   Workspace,
 } from "@/lib/types";
+
+const DEMO_AI_REVIEW_SUMMARY: AiReviewStageSummary = {
+  workspaceId: "demo",
+  status: "scaffolded",
+  blockingReason:
+    "Stage 9 uses Claude Opus 4.7 — configure an API key to try it in a local workspace.",
+  model: "anthropic/claude-opus-4-7",
+  brief: null,
+  result: null,
+  decision: null,
+  lastError: null,
+};
 
 const clone = <T,>(value: T): T =>
   typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
@@ -100,4 +113,10 @@ export const demoApi = {
 
   getConstructOutputSummary: async (): Promise<ConstructOutputStageSummary> => ok(DEMO_CONSTRUCT_OUTPUT_SUMMARY),
   updateConstructOutput: async (): Promise<ConstructOutputStageSummary> => ok(DEMO_CONSTRUCT_OUTPUT_SUMMARY),
+
+  getAiReviewSummary: async (): Promise<AiReviewStageSummary> => ok(DEMO_AI_REVIEW_SUMMARY),
+  runAiReview: async (): Promise<AiReviewStageSummary> => ok(DEMO_AI_REVIEW_SUMMARY),
+  acceptAiReview: async (): Promise<AiReviewStageSummary> => ok(DEMO_AI_REVIEW_SUMMARY),
+  overrideAiReview: async (): Promise<AiReviewStageSummary> => ok(DEMO_AI_REVIEW_SUMMARY),
+  resetAiReview: async (): Promise<AiReviewStageSummary> => ok(DEMO_AI_REVIEW_SUMMARY),
 };

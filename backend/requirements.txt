@@ -9,5 +9,6 @@ biopython>=1.84
 dnachisel>=3.2.11
 ViennaRNA>=2.7.0
 httpx>=0.28.0
+litellm>=1.55,<2
 pytest>=8.3.0
 sqlalchemy>=2.0.0

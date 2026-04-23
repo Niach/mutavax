@@ -940,6 +940,120 @@ export interface ConstructOutputStageSummary {
   auditTrail: AuditEntry[];
 }
 
+// --- Stage 9 — AI Review ---------------------------------------------------
+
+export type AiReviewStatus =
+  | "blocked"
+  | "scaffolded"
+  | "idle"
+  | "running"
+  | "completed"
+  | "failed";
+
+export type AiReviewVerdict =
+  | "approve"
+  | "approve_with_notes"
+  | "hold"
+  | "block";
+
+export type AiReviewSeverity = "info" | "note" | "watch" | "concern";
+export type AiReviewCategoryId = "validity" | "safety" | "coverage" | "manufact";
+export type AiReviewGrade = "A" | "B" | "C" | "D";
+
+export interface AiReviewFinding {
+  severity: AiReviewSeverity;
+  title: string;
+  detail: string;
+}
+
+export interface AiReviewCategory {
+  id: AiReviewCategoryId;
+  grade: AiReviewGrade;
+  verdict: "pass" | "watch" | "concern";
+  summary: string;
+  findings: AiReviewFinding[];
+}
+
+export interface AiReviewResult {
+  verdict: AiReviewVerdict;
+  confidence: number;
+  headline: string;
+  letter: string;
+  categories: AiReviewCategory[];
+  topRisks: string[];
+  nextActions: string[];
+  reviewedAt: string;
+  model: string;
+}
+
+export interface AiReviewDecision {
+  kind: "accept" | "override";
+  at: string;
+  reason?: string | null;
+}
+
+export interface AiReviewBriefPeptide {
+  seq: string;
+  gene: string;
+  mut?: string | null;
+  cls?: string | null;
+  allele?: string | null;
+  ic50_nM?: number | null;
+  vaf?: number | null;
+  cancerGene: boolean;
+  driver: boolean;
+}
+
+export interface AiReviewBriefVariants {
+  total: number;
+  pass: number;
+  snv: number;
+  indel: number;
+  medianVaf?: number | null;
+  tumorDepth?: number | null;
+  normalDepth?: number | null;
+}
+
+export interface AiReviewBriefCoverage {
+  alleles: string[];
+  classI: number;
+  classII: number;
+  uniqueGenes: string[];
+}
+
+export interface AiReviewBriefConstruct {
+  id: string;
+  version: string;
+  checksum: string;
+  aaLen: number;
+  ntLen: number;
+  cai?: number | null;
+  gc?: number | null;
+  mfe?: number | null;
+}
+
+export interface AiReviewCaseBrief {
+  patientId: string;
+  patientName: string;
+  species: string;
+  reference: string;
+  variants: AiReviewBriefVariants;
+  shortlist: AiReviewBriefPeptide[];
+  coverage: AiReviewBriefCoverage;
+  construct: AiReviewBriefConstruct;
+}
+
+export interface AiReviewStageSummary {
+  workspaceId: string;
+  status: AiReviewStatus;
+  blockingReason?: string | null;
+  model: string;
+  brief?: AiReviewCaseBrief | null;
+  result?: AiReviewResult | null;
+  decision?: AiReviewDecision | null;
+  lastError?: string | null;
+}
+
 export interface VaccineConstruct {
   id: string;
   name: string;
@@ -1040,11 +1154,11 @@ export const PIPELINE_STAGES: PipelineStage[] = [
   {
     id: "ai-review",
     name: "AI Review",
-    description: "AI-guided validation and optimization suggestions",
+    description: "Independent second-pass review by Claude Opus 4.7",
     icon: "Brain",
-    tools: ["Claude API", "ESM-C"],
-    implementationState: "planned",
-    group: "later",
+    tools: ["Claude Opus 4.7"],
+    implementationState: "live",
+    group: "primary",
   },
 ];
 

@@ -76,6 +76,17 @@ import type {
   CmoOption,
   DosingScheduleItem,
   AuditEntry,
+  AiReviewBriefPeptide,
+  AiReviewCaseBrief,
+  AiReviewCategory,
+  AiReviewFinding,
+  AiReviewResult,
+  AiReviewStageSummary,
+  AiReviewStatus,
+  AiReviewVerdict,
+  AiReviewSeverity,
+  AiReviewCategoryId,
+  AiReviewGrade,
   PatientAllele,
   BindingBucket,
   BindingTier,
@@ -1584,6 +1595,199 @@ function mapConstructOutputStageSummary(
   };
 }
 
+type AiReviewFindingDto = {
+  severity: AiReviewSeverity;
+  title: string;
+  detail: string;
+};
+
+type AiReviewCategoryDto = {
+  id: AiReviewCategoryId;
+  grade: AiReviewGrade;
+  verdict: "pass" | "watch" | "concern";
+  summary: string;
+  findings: AiReviewFindingDto[];
+};
+
+type AiReviewResultDto = {
+  verdict: AiReviewVerdict;
+  confidence: number;
+  headline: string;
+  letter: string;
+  categories: AiReviewCategoryDto[];
+  top_risks?: string[];
+  topRisks?: string[];
+  next_actions?: string[];
+  nextActions?: string[];
+  reviewed_at: string;
+  model: string;
+};
+
+type AiReviewDecisionDto = {
+  kind: "accept" | "override";
+  at: string;
+  reason?: string | null;
+};
+
+type AiReviewBriefPeptideDto = {
+  seq: string;
+  gene: string;
+  mut?: string | null;
+  cls?: string | null;
+  allele?: string | null;
+  ic50_nM?: number | null;
+  vaf?: number | null;
+  cancer_gene?: boolean;
+  cancerGene?: boolean;
+  driver?: boolean;
+};
+
+type AiReviewBriefVariantsDto = {
+  total: number;
+  pass: number;
+  snv: number;
+  indel: number;
+  median_vaf?: number | null;
+  tumor_depth?: number | null;
+  normal_depth?: number | null;
+};
+
+type AiReviewBriefCoverageDto = {
+  alleles: string[];
+  classI: number;
+  classII: number;
+  uniqueGenes: string[];
+};
+
+type AiReviewBriefConstructDto = {
+  id: string;
+  version: string;
+  checksum: string;
+  aaLen: number;
+  ntLen: number;
+  cai?: number | null;
+  gc?: number | null;
+  mfe?: number | null;
+};
+
+type AiReviewCaseBriefDto = {
+  patient_id: string;
+  patient_name: string;
+  species: string;
+  reference: string;
+  variants: AiReviewBriefVariantsDto;
+  shortlist: AiReviewBriefPeptideDto[];
+  coverage: AiReviewBriefCoverageDto;
+  construct: AiReviewBriefConstructDto;
+};
+
+type AiReviewStageSummaryDto = {
+  workspace_id: string;
+  status: AiReviewStatus;
+  blocking_reason?: string | null;
+  model: string;
+  brief?: AiReviewCaseBriefDto | null;
+  result?: AiReviewResultDto | null;
+  decision?: AiReviewDecisionDto | null;
+  last_error?: string | null;
+};
+
+function mapAiReviewStageSummary(
+  dto: AiReviewStageSummaryDto
+): AiReviewStageSummary {
+  return {
+    workspaceId: dto.workspace_id,
+    status: dto.status,
+    blockingReason: dto.blocking_reason ?? null,
+    model: dto.model,
+    brief: dto.brief ? mapAiReviewBrief(dto.brief) : null,
+    result: dto.result ? mapAiReviewResult(dto.result) : null,
+    decision: dto.decision
+      ? {
+          kind: dto.decision.kind,
+          at: dto.decision.at,
+          reason: dto.decision.reason ?? null,
+        }
+      : null,
+    lastError: dto.last_error ?? null,
+  };
+}
+
+function mapAiReviewBrief(dto: AiReviewCaseBriefDto): AiReviewCaseBrief {
+  return {
+    patientId: dto.patient_id,
+    patientName: dto.patient_name,
+    species: dto.species,
+    reference: dto.reference,
+    variants: {
+      total: dto.variants.total,
+      pass: dto.variants.pass,
+      snv: dto.variants.snv,
+      indel: dto.variants.indel,
+      medianVaf: dto.variants.median_vaf ?? null,
+      tumorDepth: dto.variants.tumor_depth ?? null,
+      normalDepth: dto.variants.normal_depth ?? null,
+    },
+    shortlist: (dto.shortlist ?? []).map(
+      (p): AiReviewBriefPeptide => ({
+        seq: p.seq,
+        gene: p.gene,
+        mut: p.mut ?? null,
+        cls: p.cls ?? null,
+        allele: p.allele ?? null,
+        ic50_nM: p.ic50_nM ?? null,
+        vaf: p.vaf ?? null,
+        cancerGene: p.cancerGene ?? p.cancer_gene ?? false,
+        driver: p.driver ?? false,
+      })
+    ),
+    coverage: {
+      alleles: dto.coverage.alleles ?? [],
+      classI: dto.coverage.classI,
+      classII: dto.coverage.classII,
+      uniqueGenes: dto.coverage.uniqueGenes ?? [],
+    },
+    construct: {
+      id: dto.construct.id,
+      version: dto.construct.version,
+      checksum: dto.construct.checksum,
+      aaLen: dto.construct.aaLen,
+      ntLen: dto.construct.ntLen,
+      cai: dto.construct.cai ?? null,
+      gc: dto.construct.gc ?? null,
+      mfe: dto.construct.mfe ?? null,
+    },
+  };
+}
+
+function mapAiReviewResult(dto: AiReviewResultDto): AiReviewResult {
+  return {
+    verdict: dto.verdict,
+    confidence: dto.confidence,
+    headline: dto.headline,
+    letter: dto.letter,
+    categories: (dto.categories ?? []).map(
+      (c): AiReviewCategory => ({
+        id: c.id,
+        grade: c.grade,
+        verdict: c.verdict,
+        summary: c.summary,
+        findings: (c.findings ?? []).map(
+          (f): AiReviewFinding => ({
+            severity: f.severity,
+            title: f.title,
+            detail: f.detail,
+          })
+        ),
+      })
+    ),
+    topRisks: dto.topRisks ?? dto.top_risks ?? [],
+    nextActions: dto.nextActions ?? dto.next_actions ?? [],
+    reviewedAt: dto.reviewed_at,
+    model: dto.model,
+  };
+}
+
 function mapVariantCallingStageSummary(
   dto: VariantCallingStageSummaryDto
 ): VariantCallingStageSummary {
@@ -2276,6 +2480,56 @@ const realApi = {
             action: payload.action,
             cmo_id: payload.cmoId ?? null,
           }),
+        }
+      )
+    ),
+  getAiReviewSummary: async (workspaceId: string) =>
+    mapAiReviewStageSummary(
+      await request<AiReviewStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/ai-review`
+      )
+    ),
+  runAiReview: async (workspaceId: string) =>
+    mapAiReviewStageSummary(
+      await request<AiReviewStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/ai-review/action`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "run" }),
+        }
+      )
+    ),
+  acceptAiReview: async (workspaceId: string) =>
+    mapAiReviewStageSummary(
+      await request<AiReviewStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/ai-review/action`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "accept" }),
+        }
+      )
+    ),
+  overrideAiReview: async (workspaceId: string, reason: string) =>
+    mapAiReviewStageSummary(
+      await request<AiReviewStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/ai-review/action`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "override", reason }),
+        }
+      )
+    ),
+  resetAiReview: async (workspaceId: string) =>
+    mapAiReviewStageSummary(
+      await request<AiReviewStageSummaryDto>(
+        `/api/workspaces/${workspaceId}/ai-review/action`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "reset" }),
         }
       )
     ),

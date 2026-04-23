@@ -27,6 +27,10 @@ services:
     environment:
       CANCERSTUDIO_CLASS_I_PREDICTOR: ${CANCERSTUDIO_CLASS_I_PREDICTOR:-MHCflurry}
       CANCERSTUDIO_REVIEW_MODEL: ${CANCERSTUDIO_REVIEW_MODEL:-anthropic/claude-opus-4-7}
+      # Hard-set the in-container data root. A host-native CANCERSTUDIO_APP_DATA_DIR
+      # in .env (for bare-metal uvicorn) would otherwise leak in via env_file and
+      # point the backend at a path that doesn't exist inside the container.
+      CANCERSTUDIO_APP_DATA_DIR: /app-data
     env_file:
       - path: .env
         required: false
