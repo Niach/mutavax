@@ -2035,6 +2035,11 @@ section.partners h2.big { font-size: clamp(36px, 4.2vw, 56px); }
 
 /* ─── cs-showcase (real-app iframe) ──────────────── */
 .app-showcase { padding-top: 60px; padding-bottom: 40px; }
+/* The default `section.block > .inner` max-width of 1400px is right for prose
+   sections but leaves a wide cream gutter on either side of the showcase chrome
+   on monitors > 1400px wide. The showcase is a UI mockup — let it use more of
+   the viewport so the panels inside breathe. */
+section.app-showcase > .inner { max-width: min(1760px, 96vw); }
 .app-showcase .showcase-head { max-width: 780px; margin-bottom: 40px; }
 .app-showcase .showcase-head .big {
   font-family: var(--font-instrument), serif;
