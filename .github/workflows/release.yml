@@ -1,9 +1,10 @@
 name: Release
 
-# Tag the current main HEAD with a semver version and cut a GitHub Release.
-# The tag push cascades into publish-backend-image.yml and publish-web-image.yml,
-# which build and push ghcr.io/<owner>/cancerstudio-{backend,web} images tagged
-# :X.Y.Z, :X.Y, and :latest.
+# Tag the current main HEAD with a semver version, cut a GitHub Release, and
+# explicitly dispatch the backend + web image publish workflows against the
+# new tag. The explicit dispatch is required because GitHub suppresses the
+# `push` event that would otherwise cascade — any ref update created by the
+# built-in GITHUB_TOKEN does not itself trigger downstream workflows.
 #
 # Trigger manually via the Actions UI (workflow_dispatch) or via the CLI:
 #   gh workflow run release.yml -f version=v0.5.0
@@ -18,6 +19,8 @@ on:
 
 permissions:
   contents: write
+  actions: write
+  packages: write
 
 concurrency:
   group: release
@@ -59,3 +62,10 @@ jobs:
             --title "${{ inputs.version }}" \
             --generate-notes \
             --verify-tag
+
+      - name: Dispatch image publish workflows
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run publish-backend-image.yml --ref "${{ inputs.version }}"
+          gh workflow run publish-web-image.yml --ref "${{ inputs.version }}"

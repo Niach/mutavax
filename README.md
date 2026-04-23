@@ -6,7 +6,12 @@
 
 Sample your DNA. Compute your cure. cancerstudio designs a personalized mRNA vaccine from the mutations in *your* tumor — for dogs, cats, and humans.
 
-**Site:** <https://cancerstudio.org> &nbsp;•&nbsp; **Status:** open source · self-hosted · v0.4
+[![Release](https://img.shields.io/github/v/release/niach/cancerstudio?color=22c55e&label=release)](https://github.com/niach/cancerstudio/releases)
+[![CI](https://github.com/niach/cancerstudio/actions/workflows/ci.yml/badge.svg)](https://github.com/niach/cancerstudio/actions/workflows/ci.yml)
+[![Backend image](https://img.shields.io/badge/ghcr.io-cancerstudio--backend-2496ed?logo=docker&logoColor=white)](https://github.com/niach/cancerstudio/pkgs/container/cancerstudio-backend)
+[![Web image](https://img.shields.io/badge/ghcr.io-cancerstudio--web-2496ed?logo=docker&logoColor=white)](https://github.com/niach/cancerstudio/pkgs/container/cancerstudio-web)
+
+**Site:** <https://cancerstudio.org>
 
 | Pick a species | Stage the samples | Run alignment | Find the mutations | Read what they mean |
 | --- | --- | --- | --- | --- |
