@@ -1,10 +1,10 @@
 name: Release
 
 # Tag the current main HEAD with a semver version, cut a GitHub Release, and
-# explicitly dispatch the backend + web image publish workflows against the
-# new tag. The explicit dispatch is required because GitHub suppresses the
-# `push` event that would otherwise cascade — any ref update created by the
-# built-in GITHUB_TOKEN does not itself trigger downstream workflows.
+# explicitly dispatch the image publish workflow against the new tag. The
+# explicit dispatch is required because GitHub suppresses the `push` event
+# that would otherwise cascade — any ref update created by the built-in
+# GITHUB_TOKEN does not itself trigger downstream workflows.
 #
 # Trigger manually via the Actions UI (workflow_dispatch) or via the CLI:
 #   gh workflow run release.yml -f version=v0.5.0
@@ -63,9 +63,8 @@ jobs:
             --generate-notes \
             --verify-tag
 
-      - name: Dispatch image publish workflows
+      - name: Dispatch image publish workflow
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh workflow run publish-backend-image.yml --ref "${{ inputs.version }}"
-          gh workflow run publish-web-image.yml --ref "${{ inputs.version }}"
+          gh workflow run publish-image.yml --ref "${{ inputs.version }}"

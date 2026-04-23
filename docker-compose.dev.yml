@@ -2,21 +2,22 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 #
-# Rebuilds the backend image from ./backend/Dockerfile, bind-mounts the source
-# tree into the container, enables uvicorn --reload, and exposes the backend
-# on 127.0.0.1:8000 so you can hit the FastAPI docs directly.
+# Rebuilds the combined image from ./backend/Dockerfile (includes the Next.js
+# build), bind-mounts the backend source tree, swaps the entrypoint for
+# uvicorn --reload on loopback 8000, and exposes 127.0.0.1:8000 so you can
+# hit the FastAPI docs directly.
 #
-# The `web` service is intentionally NOT overridden here — run `npm run dev`
-# on the host for a proper Next.js dev experience (fast refresh, devtools).
-# Pair with NEXT_PUBLIC_API_URL=http://localhost:8000 in your .env.
+# For live frontend hot-reload, run `npm run dev` on the host in a second
+# terminal (with NEXT_PUBLIC_API_URL=http://localhost:8000 in .env). The
+# containerized Next.js server is disabled in this overlay.
 
 services:
-  backend:
+  cancerstudio:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    image: cancerstudio-backend:dev
-    command:
+    image: cancerstudio:dev
+    entrypoint:
       - uvicorn
       - app.main:app
       - --host
@@ -29,7 +30,3 @@ services:
     volumes:
       - ./backend/app:/app/app
       - ./backend/tests:/app/tests
-
-  web:
-    profiles:
-      - disabled

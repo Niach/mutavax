@@ -8,8 +8,7 @@ Sample your DNA. Compute your cure. cancerstudio designs a personalized mRNA vac
 
 [![Release](https://img.shields.io/github/v/release/niach/cancerstudio?color=22c55e&label=release)](https://github.com/niach/cancerstudio/releases)
 [![CI](https://github.com/niach/cancerstudio/actions/workflows/ci.yml/badge.svg)](https://github.com/niach/cancerstudio/actions/workflows/ci.yml)
-[![Backend image](https://img.shields.io/badge/ghcr.io-cancerstudio--backend-2496ed?logo=docker&logoColor=white)](https://github.com/niach/cancerstudio/pkgs/container/cancerstudio-backend)
-[![Web image](https://img.shields.io/badge/ghcr.io-cancerstudio--web-2496ed?logo=docker&logoColor=white)](https://github.com/niach/cancerstudio/pkgs/container/cancerstudio-web)
+[![Image](https://img.shields.io/badge/ghcr.io-cancerstudio-2496ed?logo=docker&logoColor=white)](https://github.com/niach/cancerstudio/pkgs/container/cancerstudio)
 
 **Site:** <https://cancerstudio.org>
 
@@ -60,7 +59,7 @@ Tumor + matched-normal sequencing for one patient. **FASTQ, BAM, or CRAM.** ≥3
 | GPU | NVIDIA Ampere+ (RTX 3090 / 4090 / A-series / H-series) — Parabricks accelerates stage 3 Mutect2 ~10× (opt-in) |
 | OS | Linux |
 
-Everything runs in two Docker containers: the backend image (FastAPI + samtools + strobealign + GATK + VEP + pVACtools + MHCflurry + Parabricks base, ~10 GB) and the frontend image (Next.js standalone, ~300 MB). No cloud, no object storage.
+Everything runs in a single Docker container: FastAPI backend + Next.js frontend + samtools + strobealign + GATK + VEP + pVACtools + MHCflurry + Parabricks base in one ~10 GB image. No cloud, no object storage.
 
 ## Getting started
 
@@ -84,7 +83,7 @@ mkdir ~/cancerstudio && cd ~/cancerstudio
 curl -fsSL https://raw.githubusercontent.com/niach/cancerstudio/main/docker-compose.yml -o docker-compose.yml
 ```
 
-The file pulls pre-built images from GHCR (`ghcr.io/niach/cancerstudio-backend` and `ghcr.io/niach/cancerstudio-web`) — no build step on your machine.
+The file pulls the pre-built image from GHCR (`ghcr.io/niach/cancerstudio`) — no build step on your machine.
 
 ### 3. Create a `.env` (optional)
 
@@ -227,8 +226,8 @@ node scripts/take-screenshots.mjs <workspace-id>
 
 # Stages 6–8 can be captured from a synthetic demo workspace that skips the heavy
 # bioinformatics (inserts minimum DB stubs only — not suitable for any real run).
-docker cp scripts/seed_demo_workspace.py cancerstudio-backend:/tmp/seed.py
-WORKSPACE_ID=$(docker exec cancerstudio-backend python /tmp/seed.py)
+docker cp scripts/seed_demo_workspace.py cancerstudio:/tmp/seed.py
+WORKSPACE_ID=$(docker exec cancerstudio python /tmp/seed.py)
 node scripts/take-screenshots.mjs --stages=6,7,8 "$WORKSPACE_ID"
 ```
 

@@ -1,22 +1,13 @@
-name: Publish web image
+name: Publish image
 
-# Publishes the Next.js frontend image (standalone Node server) to GHCR.
-# Triggered on pushes to main and on semver tags. Mirrors publish-backend-image.yml.
+# Publishes the combined cancerstudio image (FastAPI backend + Next.js frontend
+# + bioinformatics tool chain on the NVIDIA Parabricks base) to GHCR.
+# Triggered on pushes to main and on semver tags.
 
 on:
   push:
     branches: [main]
     tags: ["v*.*.*"]
-    paths:
-      - "frontend/Dockerfile"
-      - "next.config.ts"
-      - "package.json"
-      - "package-lock.json"
-      - "src/**"
-      - "public/**"
-      - "postcss.config.mjs"
-      - "tsconfig.json"
-      - ".github/workflows/publish-web-image.yml"
   workflow_dispatch:
 
 permissions:
@@ -44,7 +35,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/cancerstudio-web
+          images: ghcr.io/${{ github.repository_owner }}/cancerstudio
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -56,7 +47,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: frontend/Dockerfile
+          file: backend/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

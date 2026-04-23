@@ -1,5 +1,27 @@
+# Combined cancerstudio image — FastAPI backend + Next.js frontend in a single
+# container. Only port 3000 is exposed; Next.js rewrites /backend/* to the
+# in-container backend on loopback 127.0.0.1:8000.
+#
 # Base: NVIDIA Parabricks 4.7.0-1 ships CUDA 12.9.1, GATK, samtools, and `pbrun`.
-# We layer Python + FastAPI + the app's other tool chain (strobealign, pigz) on top.
+# We layer Python + FastAPI + the app's other tool chain (strobealign, pigz) +
+# Node.js 22 + the built Next.js frontend on top.
+
+# Stage 1: build the Next.js standalone bundle on a debian-slim node image
+# (glibc matches the Parabricks/Ubuntu final stage).
+FROM node:22-bookworm-slim AS web-builder
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY next.config.ts tsconfig.json postcss.config.mjs ./
+COPY eslint.config.mjs ./
+COPY public ./public
+COPY src ./src
+# src/lib/demo-fixtures.ts imports JSON fixtures from ../../backend/app/data.
+COPY backend/app/data ./backend/app/data
+RUN npm run build
+
+# Stage 2: the full backend image with Node runtime + the prebuilt frontend.
 FROM nvcr.io/nvidia/clara/clara-parabricks:4.7.0-1
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -51,6 +73,11 @@ RUN apt-get update \
         tcsh \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 100 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 100 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js 22 LTS runtime for the Next.js standalone server.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # GATK 4.x — Parabricks ships the GPU-accelerated subcommands via `pbrun`
@@ -160,17 +187,26 @@ COPY backend/app /app/app
 COPY backend/tests /app/tests
 COPY pytest.ini /app/pytest.ini
 
+# Prebuilt Next.js standalone frontend from stage 1.
+COPY --from=web-builder /app/public /app/web/public
+COPY --from=web-builder /app/.next/standalone /app/web
+COPY --from=web-builder /app/.next/static /app/web/.next/static
+
+COPY backend/entrypoint.sh /usr/local/bin/cancerstudio-entrypoint
+RUN chmod +x /usr/local/bin/cancerstudio-entrypoint
+
 ENV CANCERSTUDIO_APP_DATA_DIR=/app-data \
-    CANCERSTUDIO_INBOX_DIR=/inbox \
-    CANCERSTUDIO_VEP_CACHE_DIR=/vep-cache \
     CANCERSTUDIO_VEP_PLUGINS_DIR=/opt/vep-plugins \
     CANCERSTUDIO_VEP_RELEASE=111 \
     CANCERSTUDIO_NETMHC_DIR=/tools/src \
     CANCERSTUDIO_NETMHCPAN_BIN=/tools/src/netMHCpan-4.2/netMHCpan \
     CANCERSTUDIO_NETMHCIIPAN_BIN=/tools/src/netMHCIIpan-4.3/netMHCIIpan \
     TF_USE_LEGACY_KERAS=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    INTERNAL_API_URL=http://127.0.0.1:8000 \
+    NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1
 
-EXPOSE 8000
+EXPOSE 3000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["/usr/local/bin/cancerstudio-entrypoint"]
