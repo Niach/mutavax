@@ -2035,7 +2035,17 @@ section.partners h2.big { font-size: clamp(36px, 4.2vw, 56px); }
 
 /* ─── cs-showcase (real-app iframe) ──────────────── */
 .app-showcase { padding-top: 60px; padding-bottom: 40px; }
-.app-showcase .showcase-head { max-width: 780px; margin-bottom: 40px; }
+/* The default section-level 6vw horizontal padding + the centered 1400px
+   .inner cap leave a wide cream gutter on either side of the chrome. The
+   showcase is a product shot, not prose — let the chrome go full-bleed.
+   The heading stays centered with its own gutter. */
+section.app-showcase { padding-left: 0; padding-right: 0; }
+section.app-showcase > .inner { max-width: none; margin: 0; padding: 0; }
+.app-showcase .showcase-head {
+  max-width: 780px;
+  margin-bottom: 40px;
+  margin-left: 6vw;
+}
 .app-showcase .showcase-head .big {
   font-family: var(--font-instrument), serif;
   font-size: clamp(36px, 5vw, 64px);
