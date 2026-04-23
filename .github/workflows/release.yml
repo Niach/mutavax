@@ -1,0 +1,61 @@
+name: Release
+
+# Tag the current main HEAD with a semver version and cut a GitHub Release.
+# The tag push cascades into publish-backend-image.yml and publish-web-image.yml,
+# which build and push ghcr.io/<owner>/cancerstudio-{backend,web} images tagged
+# :X.Y.Z, :X.Y, and :latest.
+#
+# Trigger manually via the Actions UI (workflow_dispatch) or via the CLI:
+#   gh workflow run release.yml -f version=v0.5.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (vMAJOR.MINOR.PATCH, e.g. v0.5.0)"
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Validate version input
+        run: |
+          if [[ ! "${{ inputs.version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must match vMAJOR.MINOR.PATCH (got: ${{ inputs.version }})"
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/${{ inputs.version }}" >/dev/null; then
+            echo "::error::Tag ${{ inputs.version }} already exists"
+            exit 1
+          fi
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ inputs.version }}" -m "Release ${{ inputs.version }}"
+          git push origin "refs/tags/${{ inputs.version }}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ inputs.version }}" \
+            --title "${{ inputs.version }}" \
+            --generate-notes \
+            --verify-tag
