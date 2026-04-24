@@ -87,9 +87,3 @@ data/
 # Local AI tooling
 .claude/
 .codex/
-
-# Research intelligence cache and state
-research/cache/*
-!research/cache/.gitkeep
-research/state/*
-!research/state/.gitkeep
