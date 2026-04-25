@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Research-only dependency for app.research.mhc2. Keep this out of the default
+# backend image until the predictor graduates from research to production.
+torch>=2.3
+
