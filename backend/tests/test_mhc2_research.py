@@ -28,6 +28,38 @@ def test_normalize_dr_and_dq_alleles() -> None:
     assert dq.beta == "HLA-DQB1*04:01"
 
 
+def test_normalize_netmhciipan_dtu_concat_form() -> None:
+    """NetMHCIIpan-4.3 pseudosequence file uses underscore + concat-digit form."""
+    assert normalize_mhc2_allele("DRB1_1501").normalized == "HLA-DRB1*15:01"
+    assert normalize_mhc2_allele("DRB1_0101").normalized == "HLA-DRB1*01:01"
+
+    dp = normalize_mhc2_allele("HLA-DPA10103-DPB10101")
+    assert dp.normalized == "HLA-DPA1*01:03-DPB1*01:01"
+    assert dp.locus == "DP"
+
+    dq = normalize_mhc2_allele("HLA-DQA10101-DQB10201")
+    assert dq.normalized == "HLA-DQA1*01:01-DQB1*02:01"
+
+
+def test_normalize_three_digit_family_with_ipd_lookup(monkeypatch) -> None:
+    """5+ digit fields are ambiguous; IPD lookup picks the registered split.
+
+    Without lookup, 'HLA-DPA10103-DPB110401' could be DPB1*10:401 or
+    DPB1*104:01. With the IPD allele list, DPB1*104:01 is registered while
+    DPB1*10:401 is not, so the lookup must prefer 104:01.
+    """
+    from app.research.mhc2 import alleles as alleles_mod
+    from app.research.mhc2 import ipd as ipd_mod
+
+    monkeypatch.setattr(alleles_mod, "known_two_field", lambda gene: {"104:01"} if gene == "DPB1" else set())
+    ipd_mod.reset_cache()
+
+    assert (
+        normalize_mhc2_allele("HLA-DPA10103-DPB110401").normalized
+        == "HLA-DPA1*01:03-DPB1*104:01"
+    )
+
+
 def test_parse_hlaiipred_positive_csv(tmp_path: Path) -> None:
     csv_path = tmp_path / "train_positive.csv"
     csv_path.write_text(

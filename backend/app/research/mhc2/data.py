@@ -14,10 +14,12 @@ from app.research.mhc2.constants import (
     AMINO_ACIDS,
     MAX_PEPTIDE_LENGTH,
     MIN_PEPTIDE_LENGTH,
+    MODEL_AMINO_ACIDS,
 )
 
 
 _PEPTIDE_RE = re.compile(rf"^[{AMINO_ACIDS}]+$")
+_PSEUDOSEQ_RE = re.compile(rf"^[{MODEL_AMINO_ACIDS}]+$")
 
 
 @dataclass(frozen=True)
@@ -160,7 +162,7 @@ def load_pseudosequences(path: Path) -> dict[str, str]:
             except ValueError:
                 allele = parts[0]
             sequence = parts[1].upper()
-            if _PEPTIDE_RE.match(sequence):
+            if _PSEUDOSEQ_RE.match(sequence):
                 sequences[allele] = sequence
     return sequences
 

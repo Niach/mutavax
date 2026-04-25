@@ -23,6 +23,10 @@ NETMHCIIPAN_FILES = {
     "NetMHCIIpan_eval.fa": "https://services.healthtech.dtu.dk/suppl/immunology/NetMHCIIpan-4.3/NetMHCIIpan_eval.fa",
 }
 
+IPD_IMGT_HLA_FILES = {
+    "Allelelist.txt": "https://raw.githubusercontent.com/ANHIG/IMGTHLA/Latest/Allelelist.txt",
+}
+
 
 def fetch_source(key: str, destination: Path, dry_run: bool = False) -> dict:
     if key not in DATA_SOURCES:
@@ -61,6 +65,8 @@ def _urls_for(source: DataSource) -> dict[str, str]:
         return HLAIIPRED_FILES
     if source.key == "netmhciipan_43":
         return NETMHCIIPAN_FILES
+    if source.key == "ipd_imgt_hla":
+        return IPD_IMGT_HLA_FILES
     raise ValueError(
         f"{source.key} has no direct downloader yet; use the source URL and place files manually."
     )

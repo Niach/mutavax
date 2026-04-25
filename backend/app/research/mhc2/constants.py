@@ -90,6 +90,15 @@ DATA_SOURCES: dict[str, DataSource] = {
         expected_files=(),
         notes="Large benchmark dataset, roughly 5.6 GB.",
     ),
+    "ipd_imgt_hla": DataSource(
+        key="ipd_imgt_hla",
+        title="IPD-IMGT/HLA official allele list",
+        url="https://github.com/ANHIG/IMGTHLA",
+        role="reference_lookup",
+        license_note="IPD-IMGT/HLA reference data. Free to redistribute with attribution.",
+        expected_files=("Allelelist.txt",),
+        notes="Used to disambiguate concatenated DTU allele names like HLA-DPA10103-DPB110401 (could be DPB1*10:401 or DPB1*104:01).",
+    ),
 }
 
 

@@ -5,8 +5,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from app.research.mhc2.ipd import known_two_field
+
 
 _GENE_RE = re.compile(r"^(?:HLA[-_]?)?(DRA|DRA1|DRB[1-9]|DQA1|DQB1|DPA1|DPB1)\*?(.+)?$")
+_HAS_DIGITS = re.compile(r"\d")
 
 
 @dataclass(frozen=True)
@@ -21,10 +24,13 @@ class MHC2Allele:
 def normalize_mhc2_allele(value: str) -> MHC2Allele:
     """Normalize common HLA-II allele/dimer strings.
 
+    Accepts canonical IPD form (``HLA-DRB1*15:01``), HLAIIPred-style names
+    (``DRB1*15:01``, ``DQA1*03:01-DQB1*04:01``), and the concatenated DTU
+    NetMHCIIpan form (``DRB1_1501``, ``HLA-DPA10103-DPB110401``).
+
     DR records are normalized to the beta-chain form used by HLAIIPred
-    (for example ``HLA-DRB1*15:01``). DP/DQ records are normalized as
-    alpha-beta heterodimers (for example
-    ``HLA-DQA1*03:01-DQB1*04:01``).
+    (``HLA-DRB1*15:01``). DP/DQ records are normalized as alpha-beta
+    heterodimers (``HLA-DQA1*03:01-DQB1*04:01``).
     """
     raw = value.strip()
     if not raw or raw in {"0", "NA", "N/A", "None", "nan"}:
@@ -78,15 +84,59 @@ def _split_dimer(value: str) -> list[str]:
 
 
 def _normalize_chain(value: str) -> str:
-    text = value.strip().upper().replace("_", "-")
+    text = value.strip().upper()
+    text = re.sub(r"^(HLA[-_]?)?(DRA1?|DRB[1-9]|DQA1|DQB1|DPA1|DPB1)_", r"\1\2*", text)
+    text = text.replace("_", "-")
+
     match = _GENE_RE.match(text)
     if not match:
         raise ValueError(f"unrecognized MHC-II allele chain: {value!r}")
     gene, fields = match.groups()
     if not fields:
         raise ValueError(f"MHC-II allele chain lacks fields: {value!r}")
-    fields = fields.replace("*", "").replace("-", ":")
-    return f"HLA-{gene}*{fields}"
+
+    fields = fields.lstrip("*").lstrip(":").lstrip("-")
+    if not fields:
+        raise ValueError(f"MHC-II allele chain lacks fields: {value!r}")
+
+    if ":" in fields:
+        return f"HLA-{gene}*{fields}"
+
+    if not fields.isdigit():
+        return f"HLA-{gene}*{fields}"
+
+    f1, f2 = _split_concat_fields(gene, fields)
+    return f"HLA-{gene}*{f1}:{f2}"
+
+
+def _split_concat_fields(gene: str, digits: str) -> tuple[str, str]:
+    """Split a digits-only field string into (family, protein).
+
+    For 4 digits the split is unambiguous (2:2). For 5+ digits we consult
+    the IPD-IMGT/HLA allele list when available. With no lookup, the 2-digit
+    family is the safer default (it covers the common case for DRB1, DRA1,
+    DQA1, DPA1; high-numbered DPB1/DQB1 alleles will be wrong but flagged).
+    """
+    if len(digits) == 4:
+        return digits[:2], digits[2:]
+    if len(digits) < 4:
+        raise ValueError(f"allele field too short to split: {digits!r}")
+
+    candidates: list[tuple[str, str]] = []
+    if len(digits) == 5:
+        candidates = [(digits[:2], digits[2:]), (digits[:3], digits[3:])]
+    elif len(digits) == 6:
+        candidates = [(digits[:3], digits[3:]), (digits[:2], digits[2:])]
+    else:
+        candidates = [(digits[:2], digits[2:]), (digits[:3], digits[3:]), (digits[:4], digits[4:])]
+
+    valid = known_two_field(gene)
+    if valid:
+        for f1, f2 in candidates:
+            if f"{f1}:{f2}" in valid:
+                return f1, f2
+
+    return candidates[0]
 
 
 def _strip_hla_prefix(value: str) -> str:
