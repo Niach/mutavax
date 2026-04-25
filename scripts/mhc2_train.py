@@ -28,6 +28,9 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--decoys-per-positive", type=int, default=1)
+    parser.add_argument("--device", default="auto", help="auto|cuda|cpu (default: auto)")
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--log-every", type=int, default=200)
     args = parser.parse_args()
 
     checkpoint = train(
@@ -42,6 +45,9 @@ def main() -> None:
             batch_size=args.batch_size,
             learning_rate=args.learning_rate,
             decoys_per_positive=args.decoys_per_positive,
+            device=args.device,
+            num_workers=args.num_workers,
+            log_every=args.log_every,
         )
     )
     print(checkpoint)
