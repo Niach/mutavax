@@ -46,55 +46,81 @@ if TORCH_AVAILABLE:  # pragma: no cover
         """Phase B collator that emits pre-computed ESM features instead of
         token IDs. Module-level so DataLoader workers can pickle it.
 
-        Inputs:
-            core_features:    dict[9-mer string, Tensor(<=9, esm_dim)]
-            pseudoseq_features: dict[pseudoseq string, Tensor(L, esm_dim)]
-            pseudosequences:  dict[allele, pseudoseq string] (for allele lookup)
-            esm_dim:          feature dim from the cache (480 for esm2_35m)
-            max_pseudoseq_length: pad target for allele branch
+        Lookup strategy:
+        * Positives (records with no ``protein_id``): peptide string is a
+          key into ``peptide_features`` -> Tensor(peptide_len, esm_dim).
+          9-mer cores are sliced at training time.
+        * Decoys (records with ``protein_id="p<index>"``): the protein-level
+          tensor is in ``protein_features[protein_id]``; the peptide window
+          is ``[peptide_offset : peptide_offset + len(peptide)]``. 9-mer
+          cores are sliced from there.
+        * Alleles: pseudoseq string from ``pseudosequences[allele]`` looks
+          up ``pseudoseq_features``.
         """
 
         def __init__(
             self,
-            core_features: dict,
+            peptide_features: dict,
+            protein_features: dict,
             pseudoseq_features: dict,
             pseudosequences: dict[str, str],
             esm_dim: int,
             max_pseudoseq_length: int,
         ) -> None:
-            self.core_features = core_features
+            self.peptide_features = peptide_features
+            self.protein_features = protein_features
             self.pseudoseq_features = pseudoseq_features
             self.pseudosequences = pseudosequences
             self.esm_dim = esm_dim
             self.max_pseudoseq_length = max_pseudoseq_length
+
+        def _peptide_features(self, record: MHC2Record) -> "_torch.Tensor":
+            if record.protein_id is not None and record.peptide_offset is not None:
+                protein_feat = self.protein_features.get(record.protein_id)
+                if protein_feat is None:
+                    raise KeyError(f"missing ESM features for protein {record.protein_id!r}")
+                start = record.peptide_offset
+                end = start + len(record.peptide)
+                if end > protein_feat.shape[0]:
+                    raise IndexError(
+                        f"decoy {record.peptide!r} offset={start} exceeds protein "
+                        f"{record.protein_id!r} length={protein_feat.shape[0]}"
+                    )
+                return protein_feat[start:end]
+            feat = self.peptide_features.get(record.peptide)
+            if feat is None:
+                raise KeyError(f"missing ESM features for peptide {record.peptide!r}")
+            if feat.shape[0] != len(record.peptide):
+                raise ValueError(
+                    f"feature length {feat.shape[0]} does not match peptide "
+                    f"{record.peptide!r} length {len(record.peptide)}"
+                )
+            return feat
 
         def __call__(self, records: list[MHC2Record]) -> tuple:
             max_cores = max(len(enumerate_cores(record.peptide)) for record in records)
             max_alleles = max(len(record.alleles) for record in records)
             core_pad = _torch.zeros(9, self.esm_dim, dtype=_torch.float32)
             allele_pad = _torch.zeros(self.max_pseudoseq_length, self.esm_dim, dtype=_torch.float32)
-            batch_core: list[list] = []
-            batch_allele: list[list] = []
+            batch_core: list = []
+            batch_allele: list = []
             core_masks: list[list[bool]] = []
             allele_masks: list[list[bool]] = []
             labels: list[float] = []
             primary_alleles: list[str] = []
             for record in records:
-                core_seqs = [core for _, core in enumerate_cores(record.peptide)]
-                core_tensors = []
-                for seq in core_seqs:
-                    feat = self.core_features.get(seq)
-                    if feat is None:
-                        # Sequence shorter than 9 (peptide < 9 residues): pad
-                        feat = self.core_features.get(seq.rstrip("X"))
-                    if feat is None:
-                        raise KeyError(f"missing ESM features for core {seq!r}")
-                    if feat.shape[0] < 9:
+                peptide_feat = self._peptide_features(record).float()
+                core_tensors: list = []
+                for offset, core in enumerate_cores(record.peptide):
+                    if len(record.peptide) >= 9:
+                        sliced = peptide_feat[offset : offset + 9]
+                    else:
+                        sliced = peptide_feat
+                    if sliced.shape[0] < 9:
                         padded = core_pad.clone()
-                        padded[: feat.shape[0]] = feat
-                        feat = padded
-                    batch_core_seq = feat
-                    core_tensors.append(batch_core_seq)
+                        padded[: sliced.shape[0]] = sliced
+                        sliced = padded
+                    core_tensors.append(sliced)
                 core_mask = [True] * len(core_tensors)
                 while len(core_tensors) < max_cores:
                     core_tensors.append(core_pad)
@@ -107,7 +133,7 @@ if TORCH_AVAILABLE:  # pragma: no cover
                     feat = self.pseudoseq_features.get(pseudoseq)
                     if feat is None:
                         raise KeyError(f"missing ESM features for pseudoseq {pseudoseq!r}")
-                    truncated = feat[: self.max_pseudoseq_length]
+                    truncated = feat[: self.max_pseudoseq_length].float()
                     padded = allele_pad.clone()
                     padded[: truncated.shape[0]] = truncated
                     allele_tensors.append(padded)
@@ -295,18 +321,22 @@ def train(config: TrainConfig) -> Path:
 
         if config.esm_cache_dir is None:
             raise ValueError("esm_cache_dir is required for model_kind=esm2_35m")
-        core_cache_path = config.esm_cache_dir / "cores.pt"
+        peptide_cache_path = config.esm_cache_dir / "peptides.pt"
+        protein_cache_path = config.esm_cache_dir / "proteins.pt"
         pseudoseq_cache_path = config.esm_cache_dir / "pseudoseqs.pt"
-        print(f"[train] loading ESM cache from {config.esm_cache_dir}", flush=True)
-        core_features = load_embedding_cache(core_cache_path)
+        print(f"[train] loading ESM caches from {config.esm_cache_dir}", flush=True)
+        peptide_features = load_embedding_cache(peptide_cache_path)
+        protein_features = load_embedding_cache(protein_cache_path)
         pseudoseq_features = load_embedding_cache(pseudoseq_cache_path)
         print(
-            f"[train] esm cache: {len(core_features)} cores, "
+            f"[train] esm cache: {len(peptide_features)} peptides, "
+            f"{len(protein_features)} proteins, "
             f"{len(pseudoseq_features)} pseudoseqs",
             flush=True,
         )
         collate = _ESMCollator(
-            core_features=core_features,
+            peptide_features=peptide_features,
+            protein_features=protein_features,
             pseudoseq_features=pseudoseq_features,
             pseudosequences=pseudosequences,
             esm_dim=config.esm_dim,

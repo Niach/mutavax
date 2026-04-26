@@ -53,7 +53,10 @@ def sample_length_matched_decoys(
     """Generate proteome windows matched to positive peptide lengths.
 
     Decoys inherit the allele set of their matched positive record, but are
-    rejected if any candidate 9-mer overlaps a positive peptide core.
+    rejected if any candidate 9-mer overlaps a positive peptide core. Each
+    decoy records the source ``protein_id`` (a stable ``"p<index>"`` key
+    into ``proteome_sequences``) and ``peptide_offset`` so downstream code
+    can look up cached protein-level features and slice cores.
     """
     if per_positive < 1:
         raise ValueError("per_positive must be at least 1")
@@ -65,12 +68,14 @@ def sample_length_matched_decoys(
     generated: list[MHC2Record] = []
     rejected_overlap = 0
     rejected_invalid = 0
+    proteome_indices = list(range(len(proteome_sequences)))
 
     for positive in positives:
         for _ in range(per_positive):
             decoy = None
             for _attempt in range(max_attempts_per_decoy):
-                sequence = rng.choice(proteome_sequences)
+                protein_idx = rng.choice(proteome_indices)
+                sequence = proteome_sequences[protein_idx]
                 if len(sequence) < len(positive.peptide):
                     rejected_invalid += 1
                     continue
@@ -94,8 +99,9 @@ def sample_length_matched_decoys(
                     source="human_proteome_decoy",
                     split=positive.split,
                     sample_id=positive.sample_id,
-                    protein_id=None,
+                    protein_id=f"p{protein_idx}",
                     weight=positive.weight,
+                    peptide_offset=start,
                 )
                 break
             if decoy is not None:

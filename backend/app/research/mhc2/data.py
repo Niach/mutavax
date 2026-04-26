@@ -32,6 +32,7 @@ class MHC2Record:
     sample_id: str | None = None
     protein_id: str | None = None
     weight: float = 1.0
+    peptide_offset: int | None = None  # 0-based start in protein_id (proteome decoys)
 
     def to_json(self) -> dict:
         payload = asdict(self)
@@ -40,6 +41,7 @@ class MHC2Record:
 
     @classmethod
     def from_json(cls, payload: dict) -> "MHC2Record":
+        offset = payload.get("peptide_offset")
         return cls(
             peptide=clean_peptide(payload["peptide"]),
             alleles=tuple(payload.get("alleles") or ()),
@@ -49,6 +51,7 @@ class MHC2Record:
             sample_id=payload.get("sample_id"),
             protein_id=payload.get("protein_id"),
             weight=float(payload.get("weight", 1.0)),
+            peptide_offset=int(offset) if offset is not None else None,
         )
 
 

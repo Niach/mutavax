@@ -57,6 +57,23 @@ def normalize_for_esm(sequence: str) -> str:
     return cleaned
 
 
+def normalize_proteome_sequence(sequence: str) -> str:
+    """Coerce a protein sequence into the ESM input alphabet by mapping any
+    non-standard residue (e.g. ``U`` selenocysteine, ``B/Z/J`` ambiguous
+    codes, ``O`` pyrrolysine, gaps, stop codons) to ``X``.
+
+    The decoy generator accepts windows that contain only the 20 canonical
+    amino acids, so it never produces a 9-mer at a position whose feature
+    is the X-substituted one. The substitution exists to keep the *protein
+    itself* embeddable end-to-end so that decoys sampled from non-X regions
+    can be sliced out at training time.
+    """
+    cleaned = sequence.strip().upper()
+    if not cleaned:
+        raise ValueError("empty protein sequence")
+    return "".join(c if c in MODEL_AMINO_ACIDS else "X" for c in cleaned)
+
+
 def load_esm2_35m(device: str = "cuda"):
     """Load the frozen ESM-2 35M model + tokenizer.
 
@@ -155,6 +172,7 @@ def cache_embeddings_to_disk(
     print(f"[esm] embedding {len(unique)} unique sequences on {device}", flush=True)
     embeddings: dict = {}
     log_every = max(1, len(unique) // 20)
+    storage_dtype = torch.bfloat16 if use_bf16 else torch.float32
     for start in range(0, len(unique), batch_size):
         batch = unique[start : start + batch_size]
         batch_features = embed_sequences(
@@ -166,7 +184,7 @@ def cache_embeddings_to_disk(
             use_bf16=use_bf16,
         )
         for seq, feat in zip(batch, batch_features):
-            embeddings[seq] = feat
+            embeddings[seq] = feat.to(storage_dtype)
         if (start // batch_size) % max(1, log_every // batch_size) == 0:
             print(
                 f"[esm] {min(start + batch_size, len(unique))}/{len(unique)}",
