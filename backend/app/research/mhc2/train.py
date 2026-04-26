@@ -18,6 +18,7 @@ from app.research.mhc2.decoys import (
 from app.research.mhc2.metrics import roc_auc
 from app.research.mhc2.model import (
     MHCIIInteractionModel,
+    MHCIIESMModel,
     MissingTorchError,
     TORCH_AVAILABLE,
     encode_sequence,
@@ -40,6 +41,94 @@ if TORCH_AVAILABLE:  # pragma: no cover
 
         def __getitem__(self, index: int) -> MHC2Record:
             return self.records[index]
+
+    class _ESMCollator:
+        """Phase B collator that emits pre-computed ESM features instead of
+        token IDs. Module-level so DataLoader workers can pickle it.
+
+        Inputs:
+            core_features:    dict[9-mer string, Tensor(<=9, esm_dim)]
+            pseudoseq_features: dict[pseudoseq string, Tensor(L, esm_dim)]
+            pseudosequences:  dict[allele, pseudoseq string] (for allele lookup)
+            esm_dim:          feature dim from the cache (480 for esm2_35m)
+            max_pseudoseq_length: pad target for allele branch
+        """
+
+        def __init__(
+            self,
+            core_features: dict,
+            pseudoseq_features: dict,
+            pseudosequences: dict[str, str],
+            esm_dim: int,
+            max_pseudoseq_length: int,
+        ) -> None:
+            self.core_features = core_features
+            self.pseudoseq_features = pseudoseq_features
+            self.pseudosequences = pseudosequences
+            self.esm_dim = esm_dim
+            self.max_pseudoseq_length = max_pseudoseq_length
+
+        def __call__(self, records: list[MHC2Record]) -> tuple:
+            max_cores = max(len(enumerate_cores(record.peptide)) for record in records)
+            max_alleles = max(len(record.alleles) for record in records)
+            core_pad = _torch.zeros(9, self.esm_dim, dtype=_torch.float32)
+            allele_pad = _torch.zeros(self.max_pseudoseq_length, self.esm_dim, dtype=_torch.float32)
+            batch_core: list[list] = []
+            batch_allele: list[list] = []
+            core_masks: list[list[bool]] = []
+            allele_masks: list[list[bool]] = []
+            labels: list[float] = []
+            primary_alleles: list[str] = []
+            for record in records:
+                core_seqs = [core for _, core in enumerate_cores(record.peptide)]
+                core_tensors = []
+                for seq in core_seqs:
+                    feat = self.core_features.get(seq)
+                    if feat is None:
+                        # Sequence shorter than 9 (peptide < 9 residues): pad
+                        feat = self.core_features.get(seq.rstrip("X"))
+                    if feat is None:
+                        raise KeyError(f"missing ESM features for core {seq!r}")
+                    if feat.shape[0] < 9:
+                        padded = core_pad.clone()
+                        padded[: feat.shape[0]] = feat
+                        feat = padded
+                    batch_core_seq = feat
+                    core_tensors.append(batch_core_seq)
+                core_mask = [True] * len(core_tensors)
+                while len(core_tensors) < max_cores:
+                    core_tensors.append(core_pad)
+                    core_mask.append(False)
+                allele_tensors = []
+                for allele in record.alleles:
+                    pseudoseq = self.pseudosequences.get(allele)
+                    if pseudoseq is None:
+                        continue
+                    feat = self.pseudoseq_features.get(pseudoseq)
+                    if feat is None:
+                        raise KeyError(f"missing ESM features for pseudoseq {pseudoseq!r}")
+                    truncated = feat[: self.max_pseudoseq_length]
+                    padded = allele_pad.clone()
+                    padded[: truncated.shape[0]] = truncated
+                    allele_tensors.append(padded)
+                allele_mask = [True] * len(allele_tensors)
+                while len(allele_tensors) < max_alleles:
+                    allele_tensors.append(allele_pad)
+                    allele_mask.append(False)
+                batch_core.append(_torch.stack(core_tensors, dim=0))
+                batch_allele.append(_torch.stack(allele_tensors, dim=0))
+                core_masks.append(core_mask)
+                allele_masks.append(allele_mask)
+                labels.append(record.target)
+                primary_alleles.append(record.alleles[0] if record.alleles else "other")
+            return (
+                _torch.stack(batch_core, dim=0),
+                _torch.stack(batch_allele, dim=0),
+                _torch.tensor(core_masks, dtype=_torch.bool),
+                _torch.tensor(allele_masks, dtype=_torch.bool),
+                _torch.tensor(labels, dtype=_torch.float32),
+                primary_alleles,
+            )
 
     class _Collator:
         """Module-level callable so DataLoader workers can pickle it."""
@@ -115,6 +204,12 @@ class TrainConfig:
     warmup_steps: int = 0  # 0 disables LR scheduler entirely
     min_lr: float = 1e-6  # cosine decay floor
     bf16: bool = False  # bfloat16 autocast on CUDA (Ampere+/Ada). No-op on CPU.
+    model_kind: str = "scratch"  # "scratch" (Phase A) or "esm2_35m" (Phase B)
+    esm_cache_dir: Path | None = None  # required when model_kind != "scratch"
+    esm_dim: int = 480  # 35M model output dim
+    esm_adapter_layers: int = 2
+    esm_adapter_heads: int = 8
+    esm_adapter_hidden: int = 1024
 
 
 def _resolve_device(requested: str) -> str:
@@ -195,24 +290,65 @@ def train(config: TrainConfig) -> Path:
             valid_records = valid_positives
         print(f"[train] valid records: {len(valid_records)}", flush=True)
 
-    collate = _Collator(pseudosequences, config.max_pseudoseq_length)
+    if config.model_kind == "esm2_35m":
+        from app.research.mhc2.esm import load_embedding_cache
 
-    model_config = {
-        "max_pseudoseq_length": config.max_pseudoseq_length,
-        "embedding_dim": config.embedding_dim,
-        "hidden_dim": config.hidden_dim,
-        "attention_heads": config.attention_heads,
-        "num_layers": config.num_layers,
-        "dropout": config.dropout,
-    }
-    model = MHCIIInteractionModel(**model_config).to(device)
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(
-        f"[train] model dim={config.embedding_dim} hidden={config.hidden_dim} "
-        f"layers={config.num_layers} heads={config.attention_heads} "
-        f"params={n_params:,}",
-        flush=True,
-    )
+        if config.esm_cache_dir is None:
+            raise ValueError("esm_cache_dir is required for model_kind=esm2_35m")
+        core_cache_path = config.esm_cache_dir / "cores.pt"
+        pseudoseq_cache_path = config.esm_cache_dir / "pseudoseqs.pt"
+        print(f"[train] loading ESM cache from {config.esm_cache_dir}", flush=True)
+        core_features = load_embedding_cache(core_cache_path)
+        pseudoseq_features = load_embedding_cache(pseudoseq_cache_path)
+        print(
+            f"[train] esm cache: {len(core_features)} cores, "
+            f"{len(pseudoseq_features)} pseudoseqs",
+            flush=True,
+        )
+        collate = _ESMCollator(
+            core_features=core_features,
+            pseudoseq_features=pseudoseq_features,
+            pseudosequences=pseudosequences,
+            esm_dim=config.esm_dim,
+            max_pseudoseq_length=config.max_pseudoseq_length,
+        )
+    else:
+        collate = _Collator(pseudosequences, config.max_pseudoseq_length)
+
+    if config.model_kind == "esm2_35m":
+        model_config = {
+            "esm_dim": config.esm_dim,
+            "adapter_layers": config.esm_adapter_layers,
+            "adapter_heads": config.esm_adapter_heads,
+            "adapter_hidden": config.esm_adapter_hidden,
+            "max_pseudoseq_length": config.max_pseudoseq_length,
+            "dropout": config.dropout,
+        }
+        model = MHCIIESMModel(**model_config).to(device)
+        n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(
+            f"[train] ESM-2 adapter: dim={config.esm_dim} "
+            f"layers={config.esm_adapter_layers} heads={config.esm_adapter_heads} "
+            f"hidden={config.esm_adapter_hidden} trainable_params={n_params:,}",
+            flush=True,
+        )
+    else:
+        model_config = {
+            "max_pseudoseq_length": config.max_pseudoseq_length,
+            "embedding_dim": config.embedding_dim,
+            "hidden_dim": config.hidden_dim,
+            "attention_heads": config.attention_heads,
+            "num_layers": config.num_layers,
+            "dropout": config.dropout,
+        }
+        model = MHCIIInteractionModel(**model_config).to(device)
+        n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(
+            f"[train] model dim={config.embedding_dim} hidden={config.hidden_dim} "
+            f"layers={config.num_layers} heads={config.attention_heads} "
+            f"params={n_params:,}",
+            flush=True,
+        )
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
     loss_fn = nn.BCEWithLogitsLoss()
 

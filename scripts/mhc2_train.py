@@ -46,6 +46,13 @@ def main() -> None:
                         help="Cosine decay floor.")
     parser.add_argument("--bf16", action="store_true",
                         help="Use bfloat16 autocast on CUDA (Ampere/Ada).")
+    parser.add_argument("--model-kind", choices=["scratch", "esm2_35m"], default="scratch",
+                        help="Phase A 'scratch' (default) or Phase B 'esm2_35m' (frozen ESM-2 features).")
+    parser.add_argument("--esm-cache-dir", type=Path, default=None,
+                        help="Directory with cores.pt + pseudoseqs.pt; required for esm2_35m.")
+    parser.add_argument("--esm-adapter-layers", type=int, default=2)
+    parser.add_argument("--esm-adapter-heads", type=int, default=8)
+    parser.add_argument("--esm-adapter-hidden", type=int, default=1024)
     args = parser.parse_args()
 
     checkpoint = train(
@@ -73,6 +80,11 @@ def main() -> None:
             warmup_steps=args.warmup_steps,
             min_lr=args.min_lr,
             bf16=args.bf16,
+            model_kind=args.model_kind,
+            esm_cache_dir=args.esm_cache_dir,
+            esm_adapter_layers=args.esm_adapter_layers,
+            esm_adapter_heads=args.esm_adapter_heads,
+            esm_adapter_hidden=args.esm_adapter_hidden,
         )
     )
     print(checkpoint)
