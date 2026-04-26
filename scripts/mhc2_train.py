@@ -35,6 +35,17 @@ def main() -> None:
                         help="Stop after N epochs with no val_auc improvement (0 disables)")
     parser.add_argument("--no-save-every-epoch", action="store_true",
                         help="Skip per-epoch checkpoints (only keep .pt and .best.pt)")
+    parser.add_argument("--embedding-dim", type=int, default=96)
+    parser.add_argument("--hidden-dim", type=int, default=128)
+    parser.add_argument("--attention-heads", type=int, default=4)
+    parser.add_argument("--num-layers", type=int, default=2)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--warmup-steps", type=int, default=0,
+                        help="Linear warmup steps before cosine decay (0 = no scheduler).")
+    parser.add_argument("--min-lr", type=float, default=1e-6,
+                        help="Cosine decay floor.")
+    parser.add_argument("--bf16", action="store_true",
+                        help="Use bfloat16 autocast on CUDA (Ampere/Ada).")
     args = parser.parse_args()
 
     checkpoint = train(
@@ -54,6 +65,14 @@ def main() -> None:
             log_every=args.log_every,
             early_stopping_patience=args.early_stopping_patience,
             save_every_epoch=not args.no_save_every_epoch,
+            embedding_dim=args.embedding_dim,
+            hidden_dim=args.hidden_dim,
+            attention_heads=args.attention_heads,
+            num_layers=args.num_layers,
+            dropout=args.dropout,
+            warmup_steps=args.warmup_steps,
+            min_lr=args.min_lr,
+            bf16=args.bf16,
         )
     )
     print(checkpoint)

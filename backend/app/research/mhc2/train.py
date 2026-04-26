@@ -44,6 +44,14 @@ class TrainConfig:
     log_every: int = 200
     save_every_epoch: bool = True
     early_stopping_patience: int = 0  # 0 disables; otherwise stop after N epochs without val_auc improvement
+    embedding_dim: int = 96
+    hidden_dim: int = 128
+    attention_heads: int = 4
+    num_layers: int = 2
+    dropout: float = 0.1
+    warmup_steps: int = 0  # 0 disables LR scheduler entirely
+    min_lr: float = 1e-6  # cosine decay floor
+    bf16: bool = False  # bfloat16 autocast on CUDA (Ampere+/Ada). No-op on CPU.
 
 
 def _resolve_device(requested: str) -> str:
@@ -173,10 +181,30 @@ def train(config: TrainConfig) -> Path:
             primary_alleles,
         )
 
-    model_config = {"max_pseudoseq_length": config.max_pseudoseq_length}
+    model_config = {
+        "max_pseudoseq_length": config.max_pseudoseq_length,
+        "embedding_dim": config.embedding_dim,
+        "hidden_dim": config.hidden_dim,
+        "attention_heads": config.attention_heads,
+        "num_layers": config.num_layers,
+        "dropout": config.dropout,
+    }
     model = MHCIIInteractionModel(**model_config).to(device)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(
+        f"[train] model dim={config.embedding_dim} hidden={config.hidden_dim} "
+        f"layers={config.num_layers} heads={config.attention_heads} "
+        f"params={n_params:,}",
+        flush=True,
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
     loss_fn = nn.BCEWithLogitsLoss()
+
+    use_bf16 = config.bf16 and device.type == "cuda" and torch.cuda.is_bf16_supported()
+    if config.bf16 and not use_bf16:
+        print("[train] bf16 requested but unsupported on this device; falling back to fp32", flush=True)
+    if use_bf16:
+        print("[train] enabling bf16 autocast for forward/loss", flush=True)
 
     pin = device.type == "cuda"
     train_loader = DataLoader(
@@ -199,6 +227,28 @@ def train(config: TrainConfig) -> Path:
         if valid_records
         else None
     )
+
+    scheduler = None
+    if config.warmup_steps > 0:
+        total_steps = max(len(train_loader) * config.epochs, config.warmup_steps + 1)
+        cosine_steps = max(total_steps - config.warmup_steps, 1)
+        end_factor = max(config.min_lr / config.learning_rate, 1e-8)
+        warmup = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=1e-3, end_factor=1.0, total_iters=config.warmup_steps
+        )
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=cosine_steps, eta_min=config.min_lr
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup, cosine], milestones=[config.warmup_steps]
+        )
+        print(
+            f"[train] LR schedule: linear warmup {config.warmup_steps} steps -> "
+            f"cosine decay over {cosine_steps} steps "
+            f"({config.learning_rate:.2e} -> {config.min_lr:.2e}); "
+            f"end_factor={end_factor:.2e}",
+            flush=True,
+        )
 
     def _save(path: Path, epoch: int) -> None:
         torch.save(
@@ -229,22 +279,35 @@ def train(config: TrainConfig) -> Path:
             allele_mask = allele_mask.to(device, non_blocking=pin)
             labels = labels.to(device, non_blocking=pin)
             optimizer.zero_grad(set_to_none=True)
-            logits, _ = model(
-                core_tokens,
-                allele_tokens,
-                core_mask=core_mask,
-                allele_mask=allele_mask,
-            )
-            loss = loss_fn(logits, labels)
+            if use_bf16:
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    logits, _ = model(
+                        core_tokens,
+                        allele_tokens,
+                        core_mask=core_mask,
+                        allele_mask=allele_mask,
+                    )
+                    loss = loss_fn(logits, labels)
+            else:
+                logits, _ = model(
+                    core_tokens,
+                    allele_tokens,
+                    core_mask=core_mask,
+                    allele_mask=allele_mask,
+                )
+                loss = loss_fn(logits, labels)
             loss.backward()
             optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
             total_loss += float(loss.detach()) * len(labels)
             total_items += len(labels)
             if config.log_every and step % config.log_every == 0:
                 rate = total_items / max(time.time() - epoch_t0, 1e-6)
+                lr_now = optimizer.param_groups[0]["lr"]
                 print(
                     f"[train] epoch={epoch} step={step}/{len(train_loader)} "
-                    f"loss={total_loss/total_items:.4f} ({rate:.0f} ex/s)",
+                    f"loss={total_loss/total_items:.4f} lr={lr_now:.2e} ({rate:.0f} ex/s)",
                     flush=True,
                 )
 
@@ -256,7 +319,7 @@ def train(config: TrainConfig) -> Path:
         }
 
         if valid_loader is not None:
-            val = _evaluate(model, valid_loader, loss_fn, device, pin)
+            val = _evaluate(model, valid_loader, loss_fn, device, pin, use_bf16=use_bf16)
             record.update(val)
 
         history.append(record)
@@ -291,7 +354,7 @@ def train(config: TrainConfig) -> Path:
     return config.output_dir / f"{config.checkpoint_track}.pt"
 
 
-def _evaluate(model, loader, loss_fn, device, pin) -> dict[str, float | dict[str, float]]:
+def _evaluate(model, loader, loss_fn, device, pin, use_bf16: bool = False) -> dict[str, float | dict[str, float]]:
     import torch
 
     model.eval()
@@ -308,10 +371,18 @@ def _evaluate(model, loader, loss_fn, device, pin) -> dict[str, float | dict[str
             core_mask = core_mask.to(device, non_blocking=pin)
             allele_mask = allele_mask.to(device, non_blocking=pin)
             labels_dev = labels.to(device, non_blocking=pin)
-            logits, _ = model(
-                core_tokens, allele_tokens, core_mask=core_mask, allele_mask=allele_mask
-            )
-            loss = loss_fn(logits, labels_dev)
+            if use_bf16:
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    logits, _ = model(
+                        core_tokens, allele_tokens, core_mask=core_mask, allele_mask=allele_mask
+                    )
+                    loss = loss_fn(logits, labels_dev)
+                logits = logits.float()
+            else:
+                logits, _ = model(
+                    core_tokens, allele_tokens, core_mask=core_mask, allele_mask=allele_mask
+                )
+                loss = loss_fn(logits, labels_dev)
             total_loss += float(loss.detach()) * len(labels)
             total_items += len(labels)
             scores = torch.sigmoid(logits).detach().cpu().tolist()

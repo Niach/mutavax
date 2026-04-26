@@ -69,6 +69,7 @@ if TORCH_AVAILABLE:  # pragma: no cover
             embedding_dim: int = 96,
             hidden_dim: int = 128,
             attention_heads: int = 4,
+            num_layers: int = 2,
             dropout: float = 0.1,
         ) -> None:
             super().__init__()
@@ -84,7 +85,7 @@ if TORCH_AVAILABLE:  # pragma: no cover
                     dropout=dropout,
                     batch_first=True,
                 ),
-                num_layers=2,
+                num_layers=num_layers,
             )
             self.allele_encoder = nn.TransformerEncoder(
                 nn.TransformerEncoderLayer(
@@ -94,7 +95,7 @@ if TORCH_AVAILABLE:  # pragma: no cover
                     dropout=dropout,
                     batch_first=True,
                 ),
-                num_layers=2,
+                num_layers=num_layers,
             )
             self.cross_attention = nn.MultiheadAttention(
                 embedding_dim,

@@ -117,6 +117,75 @@ def iter_hlaiipred_positive_csv(
             )
 
 
+def load_netmhciipan_allelelist(path: Path) -> dict[str, tuple[str, ...]]:
+    """Read the NetMHCIIpan-4.3 ``allelelist`` mapping sample tags to alleles."""
+    mapping: dict[str, tuple[str, ...]] = {}
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            tag = parts[0]
+            raw_alleles = [item for item in parts[1].split(",") if item]
+            try:
+                alleles = normalize_many(tuple(raw_alleles))
+            except ValueError:
+                continue
+            mapping[tag] = alleles
+    return mapping
+
+
+def iter_netmhciipan_partition_file(
+    path: Path,
+    *,
+    allelelist: dict[str, tuple[str, ...]],
+    source: str = "netmhciipan_43_el",
+    split: str | None = None,
+    positives_only: bool = True,
+) -> Iterator[MHC2Record]:
+    """Parse a NetMHCIIpan-4.3 EL/BA partition file (``c000_el`` ... ``c004_el``).
+
+    Format is whitespace-separated ``peptide target tag context`` per line, with
+    ``target == 1`` for ligands and ``target == 0`` for proteome decoys. The
+    ``tag`` column keys into the partner ``allelelist`` file (comma-separated
+    alleles per tag). The 16-residue ``context`` column is ignored.
+    """
+    split_name = split or _split_from_filename(path)
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                target = float(parts[1])
+            except ValueError:
+                continue
+            if positives_only and target != 1.0:
+                continue
+            try:
+                peptide = clean_peptide(parts[0])
+            except ValueError:
+                continue
+            tag = parts[2]
+            alleles = allelelist.get(tag)
+            if not alleles:
+                continue
+            yield MHC2Record(
+                peptide=peptide,
+                alleles=alleles,
+                target=target,
+                source=source,
+                split=split_name,
+                sample_id=tag,
+            )
+
+
 def iter_generic_records(
     path: Path, source: str, split: str | None = None
 ) -> Iterator[MHC2Record]:
