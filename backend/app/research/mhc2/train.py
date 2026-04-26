@@ -25,6 +25,69 @@ from app.research.mhc2.model import (
 )
 
 
+if TORCH_AVAILABLE:  # pragma: no cover
+    import torch as _torch
+    from torch.utils.data import Dataset as _TorchDataset
+
+    class _RecordDataset(_TorchDataset):
+        """Module-level Dataset so DataLoader workers can pickle it."""
+
+        def __init__(self, records: Sequence[MHC2Record]) -> None:
+            self.records = list(records)
+
+        def __len__(self) -> int:
+            return len(self.records)
+
+        def __getitem__(self, index: int) -> MHC2Record:
+            return self.records[index]
+
+    class _Collator:
+        """Module-level callable so DataLoader workers can pickle it."""
+
+        def __init__(self, pseudosequences: dict[str, str], max_pseudoseq_length: int) -> None:
+            self.pseudosequences = pseudosequences
+            self.max_pseudoseq_length = max_pseudoseq_length
+
+        def __call__(self, records: list[MHC2Record]) -> tuple:
+            max_cores = max(len(enumerate_cores(record.peptide)) for record in records)
+            max_alleles = max(len(record.alleles) for record in records)
+            core_batch: list[list[list[int]]] = []
+            allele_batch: list[list[list[int]]] = []
+            core_masks: list[list[bool]] = []
+            allele_masks: list[list[bool]] = []
+            labels: list[float] = []
+            primary_alleles: list[str] = []
+            for record in records:
+                cores = [encode_sequence(core, 9) for _, core in enumerate_cores(record.peptide)]
+                core_mask = [True] * len(cores)
+                while len(cores) < max_cores:
+                    cores.append([0] * 9)
+                    core_mask.append(False)
+                alleles = [
+                    encode_sequence(self.pseudosequences[allele], self.max_pseudoseq_length)
+                    for allele in record.alleles
+                    if allele in self.pseudosequences
+                ]
+                allele_mask = [True] * len(alleles)
+                while len(alleles) < max_alleles:
+                    alleles.append([0] * self.max_pseudoseq_length)
+                    allele_mask.append(False)
+                core_batch.append(cores)
+                allele_batch.append(alleles)
+                core_masks.append(core_mask)
+                allele_masks.append(allele_mask)
+                labels.append(record.target)
+                primary_alleles.append(record.alleles[0] if record.alleles else "other")
+            return (
+                _torch.tensor(core_batch, dtype=_torch.long),
+                _torch.tensor(allele_batch, dtype=_torch.long),
+                _torch.tensor(core_masks, dtype=_torch.bool),
+                _torch.tensor(allele_masks, dtype=_torch.bool),
+                _torch.tensor(labels, dtype=_torch.float32),
+                primary_alleles,
+            )
+
+
 @dataclass(frozen=True)
 class TrainConfig:
     train_jsonl: Path
@@ -132,54 +195,7 @@ def train(config: TrainConfig) -> Path:
             valid_records = valid_positives
         print(f"[train] valid records: {len(valid_records)}", flush=True)
 
-    class _Dataset(Dataset):
-        def __init__(self, records: Sequence[MHC2Record]) -> None:
-            self.records = list(records)
-
-        def __len__(self) -> int:
-            return len(self.records)
-
-        def __getitem__(self, index: int) -> MHC2Record:
-            return self.records[index]
-
-    def collate(records: list[MHC2Record]) -> tuple:
-        max_cores = max(len(enumerate_cores(record.peptide)) for record in records)
-        max_alleles = max(len(record.alleles) for record in records)
-        core_batch: list[list[list[int]]] = []
-        allele_batch: list[list[list[int]]] = []
-        core_masks: list[list[bool]] = []
-        allele_masks: list[list[bool]] = []
-        labels: list[float] = []
-        primary_alleles: list[str] = []
-        for record in records:
-            cores = [encode_sequence(core, 9) for _, core in enumerate_cores(record.peptide)]
-            core_mask = [True] * len(cores)
-            while len(cores) < max_cores:
-                cores.append([0] * 9)
-                core_mask.append(False)
-            alleles = [
-                encode_sequence(pseudosequences[allele], config.max_pseudoseq_length)
-                for allele in record.alleles
-                if allele in pseudosequences
-            ]
-            allele_mask = [True] * len(alleles)
-            while len(alleles) < max_alleles:
-                alleles.append([0] * config.max_pseudoseq_length)
-                allele_mask.append(False)
-            core_batch.append(cores)
-            allele_batch.append(alleles)
-            core_masks.append(core_mask)
-            allele_masks.append(allele_mask)
-            labels.append(record.target)
-            primary_alleles.append(record.alleles[0] if record.alleles else "other")
-        return (
-            torch.tensor(core_batch, dtype=torch.long),
-            torch.tensor(allele_batch, dtype=torch.long),
-            torch.tensor(core_masks, dtype=torch.bool),
-            torch.tensor(allele_masks, dtype=torch.bool),
-            torch.tensor(labels, dtype=torch.float32),
-            primary_alleles,
-        )
+    collate = _Collator(pseudosequences, config.max_pseudoseq_length)
 
     model_config = {
         "max_pseudoseq_length": config.max_pseudoseq_length,
@@ -208,7 +224,7 @@ def train(config: TrainConfig) -> Path:
 
     pin = device.type == "cuda"
     train_loader = DataLoader(
-        _Dataset(train_records),
+        _RecordDataset(train_records),
         batch_size=config.batch_size,
         shuffle=True,
         collate_fn=collate,
@@ -217,7 +233,7 @@ def train(config: TrainConfig) -> Path:
     )
     valid_loader = (
         DataLoader(
-            _Dataset(valid_records),
+            _RecordDataset(valid_records),
             batch_size=config.batch_size,
             shuffle=False,
             collate_fn=collate,
