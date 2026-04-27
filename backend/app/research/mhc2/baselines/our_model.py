@@ -23,11 +23,13 @@ class OurModelAdapter(BaselineModel):
         *,
         device: str = "auto",
         batch_size: int = 64,
+        esm_cache_dir: Path | None = None,
     ) -> None:
         self._checkpoint = Path(checkpoint)
         self._pseudosequences = Path(pseudosequences)
         self._device = device
         self._batch_size = batch_size
+        self._esm_cache_dir = Path(esm_cache_dir) if esm_cache_dir else None
 
     def is_available(self) -> tuple[bool, str]:
         if not self._checkpoint.exists():
@@ -51,6 +53,7 @@ class OurModelAdapter(BaselineModel):
             checkpoint_path=self._checkpoint,
             pseudosequence_path=self._pseudosequences,
             device=device,
+            esm_cache_dir=self._esm_cache_dir,
         )
         out: list[BaselinePrediction] = []
         for peptide, allele in pairs:

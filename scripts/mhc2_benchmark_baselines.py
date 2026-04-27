@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Score every available MHC-II baseline + our model on the locked test set.
 
-Reads a labeled JSONL (positive ligands plus length-matched proteome
-decoys), runs each baseline that is installed on the host, and writes a
-side-by-side comparison report (Markdown + JSON).
+For each labeled record (peptide + allele set + label), score the peptide
+against EVERY allele in the sample and take the max as the sample-level
+prediction. This matches HLAIIPred / NetMHCIIpan_MA / MixMHC2pred protocols
+for polyallelic data and prevents the "first allele" shortcut that earlier
+runs of this script used.
 
 Usage:
     python3 scripts/mhc2_benchmark_baselines.py \\
@@ -12,11 +14,8 @@ Usage:
         --decoys-per-positive 10 \\
         --pseudosequences data/mhc2/netmhciipan_43/extracted/pseudosequence.2023.dat \\
         --our-checkpoint data/mhc2/checkpoints/phaseB_v3/phaseB_v3.best.pt \\
+        --our-esm-cache-dir data/mhc2/esm_cache \\
         --out            data/mhc2/benchmarks/cluster_test/
-
-Each baseline auto-skips with a printed reason if its binary is not on
-the host. The harness still produces a partial report so we can iterate
-on whichever subset is currently installed.
 """
 
 from __future__ import annotations
@@ -47,21 +46,27 @@ from app.research.mhc2.decoys import (
 )
 
 
-def _build_test_pairs(
+def _build_test_records(
     test_jsonl: Path,
     proteome_fasta: Path | None,
     decoys_per_positive: int,
     seed: int,
-) -> tuple[list[tuple[str, str]], list[float]]:
-    """Returns (pairs, labels) for the locked test set: positives + decoys."""
-    positives = [r for r in read_jsonl(test_jsonl) if 9 <= len(r.peptide) <= 25]
-    pairs: list[tuple[str, str]] = []
+    label_type_filter: str | None = "presentation",
+) -> tuple[list, list[float]]:
+    """Returns (records_with_full_allele_sets, labels). Each record keeps
+    its complete ``alleles`` tuple so the scoring driver can fan-out."""
+    positives = [
+        r for r in read_jsonl(test_jsonl)
+        if 9 <= len(r.peptide) <= 25
+        and (label_type_filter is None or r.label_type == label_type_filter)
+    ]
+    records: list = []
     labels: list[float] = []
     for record in positives:
-        primary = record.alleles[0] if record.alleles else None
-        if primary:
-            pairs.append((record.peptide, primary))
-            labels.append(1.0)
+        if not record.alleles:
+            continue
+        records.append(record)
+        labels.append(1.0)
     if proteome_fasta is not None and decoys_per_positive > 0:
         proteome = read_fasta_sequences(proteome_fasta)
         decoys, _ = sample_length_matched_decoys(
@@ -72,11 +77,40 @@ def _build_test_pairs(
             seed=seed,
         )
         for record in decoys:
-            primary = record.alleles[0] if record.alleles else None
-            if primary:
-                pairs.append((record.peptide, primary))
-                labels.append(0.0)
-    return pairs, labels
+            if not record.alleles:
+                continue
+            records.append(record)
+            labels.append(0.0)
+    return records, labels
+
+
+def _score_polyallelic(
+    adapter: BaselineModel,
+    records: list,
+) -> tuple[list[float], int]:
+    """Score each record against all alleles in its sample, return per-record
+    max-score. Also returns the count of NaN scores from the adapter."""
+    pairs: list[tuple[str, str]] = []
+    record_idx_for_pair: list[int] = []
+    for i, record in enumerate(records):
+        for allele in record.alleles:
+            pairs.append((record.peptide, allele))
+            record_idx_for_pair.append(i)
+    predictions = adapter.predict(pairs)
+    if len(predictions) != len(pairs):
+        raise RuntimeError(f"{adapter.name} returned {len(predictions)} of {len(pairs)} predictions")
+    record_max: list[float] = [float("-inf")] * len(records)
+    n_nan = 0
+    for i, prediction in zip(record_idx_for_pair, predictions):
+        score = prediction.score
+        if score != score:  # nan
+            n_nan += 1
+            score = float("-inf")
+        if score > record_max[i]:
+            record_max[i] = score
+    # If a record had only NaN scores, fall back to a sentinel min.
+    record_max = [s if s > float("-inf") else -1e9 for s in record_max]
+    return record_max, n_nan
 
 
 def main() -> None:
@@ -88,21 +122,33 @@ def main() -> None:
     parser.add_argument("--pseudosequences", type=Path,
                         help="Required when --our-checkpoint is set.")
     parser.add_argument("--our-checkpoint", type=Path)
+    parser.add_argument("--our-esm-cache-dir", type=Path,
+                        help="Required when --our-checkpoint is an ESM (Phase B) checkpoint.")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--n-bootstrap", type=int, default=1000)
+    parser.add_argument("--label-type", default="presentation",
+                        choices=["presentation", "affinity", "any"],
+                        help="Filter test records by label_type. 'any' keeps all.")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
 
-    print(f"[bench] building test set from {args.test_jsonl}", flush=True)
-    pairs, labels = _build_test_pairs(
+    label_filter = None if args.label_type == "any" else args.label_type
+    print(f"[bench] building test set from {args.test_jsonl} (label_type={args.label_type})", flush=True)
+    records, labels = _build_test_records(
         args.test_jsonl,
         args.proteome_fasta,
         args.decoys_per_positive,
         args.seed,
+        label_type_filter=label_filter,
     )
-    print(f"[bench] {len(pairs):,} pairs ({sum(int(y) for y in labels):,} pos)", flush=True)
+    n_pairs = sum(len(r.alleles) for r in records)
+    print(
+        f"[bench] {len(records):,} records ({sum(int(y) for y in labels):,} pos), "
+        f"{n_pairs:,} (peptide,allele) pairs to score per tool",
+        flush=True,
+    )
 
     adapters: list[BaselineModel] = [
         NetMHCIIpanAdapter(),
@@ -116,38 +162,34 @@ def main() -> None:
             args.our_checkpoint,
             args.pseudosequences,
             device=args.device,
+            esm_cache_dir=args.our_esm_cache_dir,
         ))
 
     summary: dict = {"missing_tools": {}, "models": {}}
+    peptides = [r.peptide for r in records]
+    primary_alleles = [r.alleles[0] for r in records]  # for per-locus slicing only
+
     for adapter in adapters:
         ok, msg = adapter.is_available()
         if not ok:
             print(f"[bench] {adapter.name}: SKIP ({msg})", flush=True)
             summary["missing_tools"][adapter.name] = msg
             continue
-        print(f"[bench] {adapter.name}: scoring {len(pairs):,} pairs ({msg})", flush=True)
-        predictions = adapter.predict(pairs)
-        if len(predictions) != len(pairs):
-            raise RuntimeError(f"{adapter.name} returned {len(predictions)} of {len(pairs)} predictions")
-        scores = [p.score for p in predictions]
-        # Score direction is "higher = bind" for every adapter. NaN scores
-        # get treated as worst-bind so they don't swap ROC; flag them.
-        n_nan = sum(1 for s in scores if s != s)
-        peptides = [pair[0] for pair in pairs]
-        alleles = [pair[1] for pair in pairs]
+        print(f"[bench] {adapter.name}: scoring {n_pairs:,} pairs ({msg})", flush=True)
+        scores, n_nan = _score_polyallelic(adapter, records)
         if n_nan:
-            scores = [s if s == s else -1e9 for s in scores]
+            print(f"[bench] {adapter.name}: {n_nan} NaN scores treated as worst-binder", flush=True)
         report = compute_sota_report(
-            labels, scores, peptides, alleles,
+            labels, scores, peptides, primary_alleles,
             n_bootstrap=args.n_bootstrap,
             metadata={
                 "title": f"{adapter.name} on {args.test_jsonl.name}",
                 "model": adapter.name,
                 "test_set": str(args.test_jsonl),
-                "n_nan_scores": n_nan,
+                "n_nan_pair_scores": n_nan,
+                "scoring": "max-over-sample-alleles",
             },
         )
-        # Write per-tool artifacts.
         slug = adapter.name.replace(" ", "_").replace("/", "-")
         (args.out / f"{slug}.json").write_text(
             json.dumps(report.to_json(), indent=2) + "\n", encoding="utf-8",
@@ -170,8 +212,7 @@ def main() -> None:
 
     summary_path = args.out / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    # Compact comparison table.
-    comparison_md = ["# Cross-tool MHC-II benchmark", ""]
+    comparison_md = ["# Cross-tool MHC-II benchmark (max-over-sample-alleles)", ""]
     if summary["missing_tools"]:
         comparison_md.append("## Tools skipped")
         comparison_md.append("")

@@ -87,6 +87,20 @@ class NetMHCIIpanAdapter(BaselineModel):
                 }
                 proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
                 if proc.returncode != 0:
+                    combined = (proc.stdout + "\n" + proc.stderr).lower()
+                    if "cannot be found in hla_pseudo" in combined or "unknown allele" in combined:
+                        # Allele isn't in NetMHCIIpan's supported set -> emit
+                        # NaN scores for all pairs in this allele group; the
+                        # harness sample-level max will still be valid as
+                        # long as at least one allele in the sample is
+                        # supported.
+                        for idx in indices:
+                            peptide, allele = pairs[idx]
+                            out[idx] = BaselinePrediction(
+                                peptide=peptide, allele=allele,
+                                score=float("nan"), rank_percent=float("nan"),
+                            )
+                        continue
                     raise RuntimeError(
                         f"NetMHCIIpan failed for allele {nm_allele}: "
                         f"returncode={proc.returncode}\nstderr:\n{proc.stderr[-2000:]}\n"

@@ -85,9 +85,17 @@ def assign_cluster_splits(
         for core in cores[1:]:
             union(first, core)
 
+    # Resolve every record's component root, then count records per cluster
+    # so we can emit a meaningful cluster_weight = 1 / |cluster|. This is
+    # what HLAIIPred uses to keep motif-redundant clusters from overwhelming
+    # rare-allele records during loss aggregation.
+    record_clusters = [find(cores[0]) for cores in record_cores]
+    cluster_counts: dict[str, int] = {}
+    for cluster in record_clusters:
+        cluster_counts[cluster] = cluster_counts.get(cluster, 0) + 1
+
     assigned: list[MHC2Record] = []
-    for record, cores in zip(records, record_cores):
-        cluster = find(cores[0])
+    for record, cluster in zip(records, record_clusters):
         bucket = _stable_unit_interval(f"{seed}:{cluster}")
         if bucket < train_fraction:
             split = "train"
@@ -95,7 +103,15 @@ def assign_cluster_splits(
             split = "valid"
         else:
             split = "test"
-        assigned.append(MHC2Record.from_json({**record.to_json(), "split": split}))
+        weight = 1.0 / cluster_counts[cluster]
+        assigned.append(
+            MHC2Record.from_json({
+                **record.to_json(),
+                "split": split,
+                "cluster_id": cluster,
+                "cluster_weight": weight,
+            })
+        )
     return assigned
 
 
