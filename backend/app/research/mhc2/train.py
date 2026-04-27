@@ -243,6 +243,8 @@ class TrainConfig:
     ba_loss_weight: float = 0.3  # lambda on the BA term: total = L_el + lambda * L_ba
     cluster_weighted: bool = False  # use record.cluster_weight in loss
     allele_aggregation: str = "max"  # "max" or "logsumexp" for soft polyallelic deconvolution
+    allele_dropout: float = 0.0  # HLAIIPred-style: per-step probability of masking each allele
+    dynamic_decoys: bool = False  # regenerate decoys at the start of each epoch (HLAIIPred protocol)
 
 
 def _multi_task_loss(
@@ -326,9 +328,11 @@ def train(config: TrainConfig) -> Path:
 
     decoy_stats = None
     train_records: list[MHC2Record] = train_positives
-    if config.proteome_fasta is not None:
-        proteome = read_fasta_sequences(config.proteome_fasta)
-        positive_9mers = positive_9mer_index(train_positives)
+    proteome = (
+        read_fasta_sequences(config.proteome_fasta) if config.proteome_fasta is not None else None
+    )
+    positive_9mers = positive_9mer_index(train_positives) if proteome is not None else None
+    if proteome is not None:
         decoys, decoy_stats = sample_length_matched_decoys(
             train_positives,
             proteome,
@@ -438,6 +442,10 @@ def train(config: TrainConfig) -> Path:
         )
     if config.cluster_weighted:
         print("[train] cluster-weighted loss enabled", flush=True)
+    if config.allele_dropout > 0:
+        print(f"[train] allele dropout p={config.allele_dropout} (HLAIIPred protocol)", flush=True)
+    if config.dynamic_decoys:
+        print("[train] dynamic per-epoch decoys enabled", flush=True)
 
     pin = device.type == "cuda"
     train_loader = DataLoader(
@@ -500,6 +508,28 @@ def train(config: TrainConfig) -> Path:
     best_val_auc = float("-inf")
     epochs_without_improvement = 0
     for epoch in range(1, config.epochs + 1):
+        if config.dynamic_decoys and proteome is not None and epoch > 1:
+            decoys, ds = sample_length_matched_decoys(
+                train_positives,
+                proteome,
+                positive_9mers=positive_9mers,
+                per_positive=config.decoys_per_positive,
+                seed=config.seed + epoch * 10000,
+            )
+            train_records = train_positives + decoys
+            print(
+                f"[train] epoch {epoch}: regenerated {ds.generated:,} decoys "
+                f"(seed={config.seed + epoch * 10000})",
+                flush=True,
+            )
+            train_loader = DataLoader(
+                _RecordDataset(train_records),
+                batch_size=config.batch_size,
+                shuffle=True,
+                collate_fn=collate,
+                num_workers=config.num_workers,
+                pin_memory=pin,
+            )
         model.train()
         total_loss = 0.0
         total_items = 0
@@ -517,6 +547,23 @@ def train(config: TrainConfig) -> Path:
             label_types = label_types.to(device, non_blocking=pin)
             ba_values = ba_values.to(device, non_blocking=pin)
             sample_weights = sample_weights.to(device, non_blocking=pin)
+            # HLAIIPred-style allele-score dropout: per-step, mask each
+            # currently-valid allele independently with probability p, but
+            # always keep at least one allele per sample so the loss has a
+            # signal to compute against.
+            if config.allele_dropout > 0 and model.training:
+                drop_probs = torch.rand_like(allele_mask, dtype=torch.float32)
+                drop = (drop_probs < config.allele_dropout) & allele_mask
+                proposed = allele_mask & ~drop
+                # If we'd drop every allele in a sample, restore the most
+                # confident-looking one (just keep the first valid).
+                empty = ~proposed.any(dim=1)
+                if empty.any():
+                    rescue = torch.zeros_like(allele_mask)
+                    first_valid = allele_mask.float().cumsum(dim=1) == 1
+                    rescue = first_valid & allele_mask
+                    proposed = torch.where(empty[:, None], rescue, proposed)
+                allele_mask = proposed
             optimizer.zero_grad(set_to_none=True)
             if use_bf16:
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):

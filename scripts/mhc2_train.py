@@ -61,6 +61,12 @@ def main() -> None:
     parser.add_argument("--allele-aggregation", choices=["max", "logsumexp"], default="max",
                         help="How to combine per-allele logits into a sample logit: "
                              "'max' (Phase A/B v0) or 'logsumexp' (soft 'any allele can present').")
+    parser.add_argument("--allele-dropout", type=float, default=0.0,
+                        help="HLAIIPred-style allele-score dropout: per-step probability of "
+                             "masking each allele in a polyallelic sample (0 = off).")
+    parser.add_argument("--dynamic-decoys", action="store_true",
+                        help="Regenerate length-matched decoys at the start of each epoch "
+                             "instead of fixing them once (HLAIIPred protocol).")
     args = parser.parse_args()
 
     checkpoint = train(
@@ -97,6 +103,8 @@ def main() -> None:
             ba_loss_weight=args.ba_loss_weight,
             cluster_weighted=args.cluster_weighted,
             allele_aggregation=args.allele_aggregation,
+            allele_dropout=args.allele_dropout,
+            dynamic_decoys=args.dynamic_decoys,
         )
     )
     print(checkpoint)
