@@ -302,18 +302,18 @@ def train(config: TrainConfig) -> Path:
         print(f"[train] valid records: {len(valid_records)}", flush=True)
 
     if config.model_kind == "esm2_35m":
-        from app.research.mhc2.esm import load_embedding_cache
+        from app.research.mhc2.esm import load_packed_or_dict_cache
 
         if config.esm_cache_dir is None:
             raise ValueError("esm_cache_dir is required for model_kind=esm2_35m")
-        peptide_cache_path = config.esm_cache_dir / "peptides.pt"
-        pseudoseq_cache_path = config.esm_cache_dir / "pseudoseqs.pt"
         print(f"[train] loading ESM caches from {config.esm_cache_dir}", flush=True)
-        peptide_features = load_embedding_cache(peptide_cache_path)
-        pseudoseq_features = load_embedding_cache(pseudoseq_cache_path)
+        peptide_features = load_packed_or_dict_cache(config.esm_cache_dir, "peptides")
+        pseudoseq_features = load_packed_or_dict_cache(config.esm_cache_dir, "pseudoseqs")
         print(
-            f"[train] esm cache: {len(peptide_features)} peptides, "
-            f"{len(pseudoseq_features)} pseudoseqs",
+            f"[train] esm cache: {len(peptide_features)} peptides "
+            f"({type(peptide_features).__name__}), "
+            f"{len(pseudoseq_features)} pseudoseqs "
+            f"({type(pseudoseq_features).__name__})",
             flush=True,
         )
         collate = _ESMCollator(

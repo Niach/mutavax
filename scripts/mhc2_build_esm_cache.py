@@ -48,6 +48,7 @@ from app.research.mhc2.decoys import (
 )
 from app.research.mhc2.esm import (
     ESM_MODEL_ID,
+    cache_embeddings_packed,
     cache_embeddings_to_disk,
     normalize_for_esm,
 )
@@ -140,6 +141,8 @@ def main() -> None:
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--skip-peptides", action="store_true")
     parser.add_argument("--skip-pseudoseqs", action="store_true")
+    parser.add_argument("--legacy-dict", action="store_true",
+                        help="Write legacy {name}.pt dict instead of packed memmap-able .bin/.idx.pt.")
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -166,26 +169,48 @@ def main() -> None:
             seed=args.seed,
         )
         print(f"[esm-cache] unique peptides: {len(peptides)}", flush=True)
-        cache_embeddings_to_disk(
-            peptides,
-            args.out / "peptides.pt",
-            device=args.device,
-            batch_size=args.batch_size,
-            use_bf16=args.bf16,
-            source_files=tuple(str(p) for p in [args.train_jsonl, *extras, args.proteome_fasta]),
-        )
+        if args.legacy_dict:
+            cache_embeddings_to_disk(
+                peptides,
+                args.out / "peptides.pt",
+                device=args.device,
+                batch_size=args.batch_size,
+                use_bf16=args.bf16,
+                source_files=tuple(str(p) for p in [args.train_jsonl, *extras, args.proteome_fasta]),
+            )
+        else:
+            cache_embeddings_packed(
+                peptides,
+                args.out,
+                "peptides",
+                device=args.device,
+                batch_size=args.batch_size,
+                use_bf16=args.bf16,
+                source_files=tuple(str(p) for p in [args.train_jsonl, *extras, args.proteome_fasta]),
+            )
 
     if not args.skip_pseudoseqs:
         pseudoseqs = collect_pseudoseqs(args.pseudosequences)
         print(f"[esm-cache] unique pseudoseqs: {len(pseudoseqs)}", flush=True)
-        cache_embeddings_to_disk(
-            pseudoseqs,
-            args.out / "pseudoseqs.pt",
-            device=args.device,
-            batch_size=args.batch_size,
-            use_bf16=args.bf16,
-            source_files=(str(args.pseudosequences),),
-        )
+        if args.legacy_dict:
+            cache_embeddings_to_disk(
+                pseudoseqs,
+                args.out / "pseudoseqs.pt",
+                device=args.device,
+                batch_size=args.batch_size,
+                use_bf16=args.bf16,
+                source_files=(str(args.pseudosequences),),
+            )
+        else:
+            cache_embeddings_packed(
+                pseudoseqs,
+                args.out,
+                "pseudoseqs",
+                device=args.device,
+                batch_size=args.batch_size,
+                use_bf16=args.bf16,
+                source_files=(str(args.pseudosequences),),
+            )
 
     print(f"[esm-cache] done; outputs in {args.out}", flush=True)
 
