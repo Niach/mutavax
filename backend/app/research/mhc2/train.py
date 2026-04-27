@@ -93,6 +93,9 @@ if TORCH_AVAILABLE:  # pragma: no cover
             allele_masks: list[list[bool]] = []
             labels: list[float] = []
             primary_alleles: list[str] = []
+            label_types: list[int] = []  # 0 = presentation, 1 = affinity
+            ba_values: list[float] = []
+            sample_weights: list[float] = []
             for record in records:
                 peptide_feat = self._peptide_features(record).float()
                 core_tensors: list = []
@@ -132,6 +135,9 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 allele_masks.append(allele_mask)
                 labels.append(record.target)
                 primary_alleles.append(record.alleles[0] if record.alleles else "other")
+                label_types.append(1 if record.label_type == "affinity" else 0)
+                ba_values.append(record.ba_value if record.ba_value is not None else 0.0)
+                sample_weights.append(record.cluster_weight)
             return (
                 _torch.stack(batch_core, dim=0),
                 _torch.stack(batch_allele, dim=0),
@@ -139,6 +145,9 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 _torch.tensor(allele_masks, dtype=_torch.bool),
                 _torch.tensor(labels, dtype=_torch.float32),
                 primary_alleles,
+                _torch.tensor(label_types, dtype=_torch.long),
+                _torch.tensor(ba_values, dtype=_torch.float32),
+                _torch.tensor(sample_weights, dtype=_torch.float32),
             )
 
     class _Collator:
@@ -157,6 +166,9 @@ if TORCH_AVAILABLE:  # pragma: no cover
             allele_masks: list[list[bool]] = []
             labels: list[float] = []
             primary_alleles: list[str] = []
+            label_types: list[int] = []
+            ba_values: list[float] = []
+            sample_weights: list[float] = []
             for record in records:
                 cores = [encode_sequence(core, 9) for _, core in enumerate_cores(record.peptide)]
                 core_mask = [True] * len(cores)
@@ -178,6 +190,9 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 allele_masks.append(allele_mask)
                 labels.append(record.target)
                 primary_alleles.append(record.alleles[0] if record.alleles else "other")
+                label_types.append(1 if record.label_type == "affinity" else 0)
+                ba_values.append(record.ba_value if record.ba_value is not None else 0.0)
+                sample_weights.append(record.cluster_weight)
             return (
                 _torch.tensor(core_batch, dtype=_torch.long),
                 _torch.tensor(allele_batch, dtype=_torch.long),
@@ -185,6 +200,9 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 _torch.tensor(allele_masks, dtype=_torch.bool),
                 _torch.tensor(labels, dtype=_torch.float32),
                 primary_alleles,
+                _torch.tensor(label_types, dtype=_torch.long),
+                _torch.tensor(ba_values, dtype=_torch.float32),
+                _torch.tensor(sample_weights, dtype=_torch.float32),
             )
 
 
@@ -221,6 +239,47 @@ class TrainConfig:
     esm_adapter_layers: int = 2
     esm_adapter_heads: int = 8
     esm_adapter_hidden: int = 1024
+    multi_task_ba: bool = False  # add a BA regression head and mix EL + BA loss
+    ba_loss_weight: float = 0.3  # lambda on the BA term: total = L_el + lambda * L_ba
+    cluster_weighted: bool = False  # use record.cluster_weight in loss
+
+
+def _multi_task_loss(
+    model_out,
+    labels,
+    label_types,
+    ba_values,
+    sample_weights,
+    loss_fn,
+    ba_loss_fn,
+    config: "TrainConfig",
+):
+    """Combined EL (BCE) + BA (MSE on log-affinity) loss with optional
+    cluster weighting. ``model_out`` is either ``(sample_logits, grid)``
+    when ``with_ba_head=False`` or ``(sample_logits, grid, ba_logits)``
+    when the BA head is enabled."""
+    sample_logits = model_out[0]
+    el_mask = label_types == 0
+    ba_mask = label_types == 1
+    weights = sample_weights if config.cluster_weighted else None
+
+    el_loss = loss_fn(sample_logits, labels)  # per-record (reduction='none')
+    if weights is not None:
+        el_loss = el_loss * weights
+    if el_mask.any():
+        el_term = el_loss[el_mask].mean()
+    else:
+        el_term = sample_logits.sum() * 0.0  # zero with grad
+
+    if config.multi_task_ba and len(model_out) >= 3 and ba_mask.any():
+        ba_logits = model_out[2]
+        ba_pred = _torch.sigmoid(ba_logits)
+        ba_loss = ba_loss_fn(ba_pred, ba_values)
+        if weights is not None:
+            ba_loss = ba_loss * weights
+        ba_term = ba_loss[ba_mask].mean()
+        return el_term + config.ba_loss_weight * ba_term
+    return el_term
 
 
 def _resolve_device(requested: str) -> str:
@@ -334,6 +393,7 @@ def train(config: TrainConfig) -> Path:
             "adapter_hidden": config.esm_adapter_hidden,
             "max_pseudoseq_length": config.max_pseudoseq_length,
             "dropout": config.dropout,
+            "with_ba_head": config.multi_task_ba,
         }
         model = MHCIIESMModel(**model_config).to(device)
         n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -361,13 +421,21 @@ def train(config: TrainConfig) -> Path:
             flush=True,
         )
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
-    loss_fn = nn.BCEWithLogitsLoss()
+    loss_fn = nn.BCEWithLogitsLoss(reduction="none")
+    ba_loss_fn = nn.MSELoss(reduction="none")
 
     use_bf16 = config.bf16 and device.type == "cuda" and torch.cuda.is_bf16_supported()
     if config.bf16 and not use_bf16:
         print("[train] bf16 requested but unsupported on this device; falling back to fp32", flush=True)
     if use_bf16:
         print("[train] enabling bf16 autocast for forward/loss", flush=True)
+    if config.multi_task_ba:
+        print(
+            f"[train] multi-task BA head enabled (ba_loss_weight={config.ba_loss_weight})",
+            flush=True,
+        )
+    if config.cluster_weighted:
+        print("[train] cluster-weighted loss enabled", flush=True)
 
     pin = device.type == "cuda"
     train_loader = DataLoader(
@@ -435,30 +503,39 @@ def train(config: TrainConfig) -> Path:
         total_items = 0
         epoch_t0 = time.time()
         for step, batch in enumerate(train_loader, start=1):
-            core_tokens, allele_tokens, core_mask, allele_mask, labels, _ = batch
+            (
+                core_tokens, allele_tokens, core_mask, allele_mask,
+                labels, _, label_types, ba_values, sample_weights,
+            ) = batch
             core_tokens = core_tokens.to(device, non_blocking=pin)
             allele_tokens = allele_tokens.to(device, non_blocking=pin)
             core_mask = core_mask.to(device, non_blocking=pin)
             allele_mask = allele_mask.to(device, non_blocking=pin)
             labels = labels.to(device, non_blocking=pin)
+            label_types = label_types.to(device, non_blocking=pin)
+            ba_values = ba_values.to(device, non_blocking=pin)
+            sample_weights = sample_weights.to(device, non_blocking=pin)
             optimizer.zero_grad(set_to_none=True)
             if use_bf16:
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    logits, _ = model(
-                        core_tokens,
-                        allele_tokens,
-                        core_mask=core_mask,
-                        allele_mask=allele_mask,
+                    out = model(
+                        core_tokens, allele_tokens,
+                        core_mask=core_mask, allele_mask=allele_mask,
                     )
-                    loss = loss_fn(logits, labels)
+                    loss = _multi_task_loss(
+                        out, labels, label_types, ba_values, sample_weights,
+                        loss_fn, ba_loss_fn, config,
+                    )
             else:
-                logits, _ = model(
-                    core_tokens,
-                    allele_tokens,
-                    core_mask=core_mask,
-                    allele_mask=allele_mask,
+                out = model(
+                    core_tokens, allele_tokens,
+                    core_mask=core_mask, allele_mask=allele_mask,
                 )
-                loss = loss_fn(logits, labels)
+                loss = _multi_task_loss(
+                    out, labels, label_types, ba_values, sample_weights,
+                    loss_fn, ba_loss_fn, config,
+                )
+            logits = out[0]
             loss.backward()
             optimizer.step()
             if scheduler is not None:
@@ -528,7 +605,8 @@ def _evaluate(model, loader, loss_fn, device, pin, use_bf16: bool = False) -> di
     per_locus: dict[str, tuple[list[float], list[float]]] = defaultdict(lambda: ([], []))
     with torch.no_grad():
         for batch in loader:
-            core_tokens, allele_tokens, core_mask, allele_mask, labels, primary_alleles = batch
+            # Newer collators emit 9 fields; fall back to legacy 6 for tests.
+            core_tokens, allele_tokens, core_mask, allele_mask, labels, primary_alleles = batch[:6]
             core_tokens = core_tokens.to(device, non_blocking=pin)
             allele_tokens = allele_tokens.to(device, non_blocking=pin)
             core_mask = core_mask.to(device, non_blocking=pin)
@@ -536,16 +614,22 @@ def _evaluate(model, loader, loss_fn, device, pin, use_bf16: bool = False) -> di
             labels_dev = labels.to(device, non_blocking=pin)
             if use_bf16:
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    logits, _ = model(
+                    out = model(
                         core_tokens, allele_tokens, core_mask=core_mask, allele_mask=allele_mask
                     )
+                    logits = out[0]
                     loss = loss_fn(logits, labels_dev)
+                    if loss.ndim > 0:
+                        loss = loss.mean()
                 logits = logits.float()
             else:
-                logits, _ = model(
+                out = model(
                     core_tokens, allele_tokens, core_mask=core_mask, allele_mask=allele_mask
                 )
+                logits = out[0]
                 loss = loss_fn(logits, labels_dev)
+                if loss.ndim > 0:
+                    loss = loss.mean()
             total_loss += float(loss.detach()) * len(labels)
             total_items += len(labels)
             scores = torch.sigmoid(logits).detach().cpu().tolist()

@@ -53,6 +53,11 @@ def main() -> None:
     parser.add_argument("--esm-adapter-layers", type=int, default=2)
     parser.add_argument("--esm-adapter-heads", type=int, default=8)
     parser.add_argument("--esm-adapter-hidden", type=int, default=1024)
+    parser.add_argument("--multi-task-ba", action="store_true",
+                        help="Enable BA regression head + multi-task EL+BA loss.")
+    parser.add_argument("--ba-loss-weight", type=float, default=0.3)
+    parser.add_argument("--cluster-weighted", action="store_true",
+                        help="Multiply each per-sample loss by record.cluster_weight.")
     args = parser.parse_args()
 
     checkpoint = train(
@@ -85,6 +90,9 @@ def main() -> None:
             esm_adapter_layers=args.esm_adapter_layers,
             esm_adapter_heads=args.esm_adapter_heads,
             esm_adapter_hidden=args.esm_adapter_hidden,
+            multi_task_ba=args.multi_task_ba,
+            ba_loss_weight=args.ba_loss_weight,
+            cluster_weighted=args.cluster_weighted,
         )
     )
     print(checkpoint)

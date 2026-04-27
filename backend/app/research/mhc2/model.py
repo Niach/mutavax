@@ -69,6 +69,10 @@ if TORCH_AVAILABLE:  # pragma: no cover
         pseudoseq_len, esm_dim]`` — pre-computed feature tensors, not token
         IDs. The adapter learns to specialize ESM's general PLM features to
         the binding-prediction task while keeping ESM frozen.
+
+        When ``with_ba_head=True`` the model also produces a
+        binding-affinity regression head over the same shared encoder so
+        the trainer can run a multi-task EL + BA loss.
         """
 
         def __init__(
@@ -79,10 +83,12 @@ if TORCH_AVAILABLE:  # pragma: no cover
             adapter_hidden: int = 1024,
             max_pseudoseq_length: int = 64,
             dropout: float = 0.1,
+            with_ba_head: bool = False,
         ) -> None:
             super().__init__()
             self.esm_dim = esm_dim
             self.max_pseudoseq_length = max_pseudoseq_length
+            self.with_ba_head = with_ba_head
             self.core_adapter = nn.TransformerEncoder(
                 nn.TransformerEncoderLayer(
                     d_model=esm_dim,
@@ -112,6 +118,18 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 nn.Dropout(dropout),
                 nn.Linear(adapter_hidden, 1),
             )
+            if with_ba_head:
+                # BA head shares the same fused (core, allele, attended)
+                # representation but predicts a single scalar
+                # log-affinity for each (peptide, allele) pair. We pool
+                # over candidate cores at the end so it's directly
+                # comparable to the IEDB log-affinity targets.
+                self.ba_scorer = nn.Sequential(
+                    nn.Linear(esm_dim * 3, adapter_hidden),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(adapter_hidden, 1),
+                )
 
         def forward(
             self,
@@ -145,9 +163,8 @@ if TORCH_AVAILABLE:  # pragma: no cover
             core_pool = core_pairs.mean(dim=1)
             allele_pool = allele_pairs.mean(dim=1)
             attended_pool = attended.mean(dim=1)
-            logits = self.scorer(
-                torch.cat([core_pool, allele_pool, attended_pool], dim=-1)
-            ).squeeze(-1)
+            fused = torch.cat([core_pool, allele_pool, attended_pool], dim=-1)
+            logits = self.scorer(fused).squeeze(-1)
             grid = logits.reshape(batch, n_cores, n_alleles).transpose(1, 2)
 
             if core_mask is None:
@@ -157,6 +174,17 @@ if TORCH_AVAILABLE:  # pragma: no cover
             valid = allele_mask[:, :, None] & core_mask[:, None, :]
             masked_grid = grid.masked_fill(~valid, torch.finfo(grid.dtype).min)
             sample_logits = masked_grid.flatten(start_dim=1).max(dim=1).values
+
+            if self.with_ba_head:
+                # Per-(core, allele) BA prediction, then max over cores ->
+                # per-(sample, allele) -> max over alleles for the
+                # sample-level BA prediction. We use sigmoid because BA
+                # targets are bounded in [0, 1] (1 - log(IC50)/log(50000)).
+                ba_logits = self.ba_scorer(fused).squeeze(-1)
+                ba_grid = ba_logits.reshape(batch, n_cores, n_alleles).transpose(1, 2)
+                ba_masked = ba_grid.masked_fill(~valid, torch.finfo(ba_grid.dtype).min)
+                ba_sample_logits = ba_masked.flatten(start_dim=1).max(dim=1).values
+                return sample_logits, grid, ba_sample_logits
             return sample_logits, grid
 
 
