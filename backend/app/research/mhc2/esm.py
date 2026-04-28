@@ -267,7 +267,9 @@ def cache_embeddings_packed(
 
     model, tokenizer = load_esm2_35m(device=device)
     print(
-        f"[esm-packed] embedding {len(unique)} unique sequences -> {bin_path}",
+        f"[esm-packed] embedding {len(unique)} unique sequences -> {bin_path} "
+        f"(storage_dtype={'bf16' if use_bf16 else 'fp32'}, "
+        f"bytes_per_residue={bytes_per_residue})",
         flush=True,
     )
 
@@ -276,6 +278,7 @@ def cache_embeddings_packed(
     sequences_in_order: list[str] = []
     cursor = 0
     log_every = max(1, len(unique) // 20)
+    sanity_checked = False
 
     with bin_path.open("wb") as bin_handle:
         for start in range(0, len(unique), batch_size):
@@ -292,12 +295,38 @@ def cache_embeddings_packed(
                 feat_t = feat.to(storage_dtype).contiguous()
                 feat_bytes = feat_t.numpy().view("uint8").tobytes() if not use_bf16 \
                     else feat_t.view(torch.uint8).numpy().tobytes()
+                expected_bytes = feat_t.shape[0] * bytes_per_residue
+                if len(feat_bytes) != expected_bytes:
+                    raise RuntimeError(
+                        f"[esm-packed] BYTE-WIDTH MISMATCH for {seq!r}: "
+                        f"wrote {len(feat_bytes)} bytes for {feat_t.shape[0]} residues "
+                        f"(expected {expected_bytes}, "
+                        f"{len(feat_bytes) / max(1, feat_t.shape[0]):.1f} B/res actual vs "
+                        f"{bytes_per_residue} B/res expected)."
+                    )
                 bin_handle.write(feat_bytes)
                 length = feat_t.shape[0]
                 starts.append(cursor)
                 lengths.append(length)
                 sequences_in_order.append(seq)
                 cursor += length
+            if not sanity_checked:
+                bin_handle.flush()
+                actual_size = bin_path.stat().st_size
+                expected_size = cursor * bytes_per_residue
+                if actual_size != expected_size:
+                    raise RuntimeError(
+                        f"[esm-packed] FILE-SIZE MISMATCH after first batch: "
+                        f"file={actual_size} bytes, expected={expected_size} "
+                        f"({cursor} residues x {bytes_per_residue} B/res)."
+                    )
+                print(
+                    f"[esm-packed] first-batch sanity ok: "
+                    f"{cursor} residues -> {actual_size} bytes "
+                    f"({actual_size / cursor:.1f} B/res)",
+                    flush=True,
+                )
+                sanity_checked = True
             if (start // batch_size) % max(1, log_every // batch_size) == 0:
                 print(
                     f"[esm-packed] {min(start + batch_size, len(unique))}/{len(unique)} "
