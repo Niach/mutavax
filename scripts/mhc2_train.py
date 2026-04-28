@@ -57,7 +57,10 @@ def main() -> None:
                         help="Enable BA regression head + multi-task EL+BA loss.")
     parser.add_argument("--ba-loss-weight", type=float, default=0.3)
     parser.add_argument("--cluster-weighted", action="store_true",
-                        help="Multiply each per-sample loss by record.cluster_weight.")
+                        help="Multiply each per-sample loss by record.cluster_weight (legacy / shrinks gradients).")
+    parser.add_argument("--cluster-weighted-sampler", action="store_true",
+                        help="Use WeightedRandomSampler with weights=cluster_weight to balance cluster "
+                             "representation per epoch (HLAIIPred protocol). Preserves gradient magnitude.")
     parser.add_argument("--allele-aggregation", choices=["max", "logsumexp"], default="max",
                         help="How to combine per-allele logits into a sample logit: "
                              "'max' (Phase A/B v0) or 'logsumexp' (soft 'any allele can present').")
@@ -102,6 +105,7 @@ def main() -> None:
             multi_task_ba=args.multi_task_ba,
             ba_loss_weight=args.ba_loss_weight,
             cluster_weighted=args.cluster_weighted,
+            cluster_weighted_sampler=args.cluster_weighted_sampler,
             allele_aggregation=args.allele_aggregation,
             allele_dropout=args.allele_dropout,
             dynamic_decoys=args.dynamic_decoys,

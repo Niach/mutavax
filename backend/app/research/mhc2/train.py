@@ -241,7 +241,8 @@ class TrainConfig:
     esm_adapter_hidden: int = 1024
     multi_task_ba: bool = False  # add a BA regression head and mix EL + BA loss
     ba_loss_weight: float = 0.3  # lambda on the BA term: total = L_el + lambda * L_ba
-    cluster_weighted: bool = False  # use record.cluster_weight in loss
+    cluster_weighted: bool = False  # multiply per-record loss by cluster_weight (legacy / shrinks gradients)
+    cluster_weighted_sampler: bool = False  # use WeightedRandomSampler with cluster_weight (HLAIIPred protocol)
     allele_aggregation: str = "max"  # "max" or "logsumexp" for soft polyallelic deconvolution
     allele_dropout: float = 0.0  # HLAIIPred-style: per-step probability of masking each allele
     dynamic_decoys: bool = False  # regenerate decoys at the start of each epoch (HLAIIPred protocol)
@@ -443,7 +444,15 @@ def train(config: TrainConfig) -> Path:
             flush=True,
         )
     if config.cluster_weighted:
-        print("[train] cluster-weighted loss enabled", flush=True)
+        print("[train] cluster-weighted LOSS enabled (per-record loss x weight; "
+              "shrinks gradients when most weights << 1)", flush=True)
+    if config.cluster_weighted_sampler:
+        print("[train] cluster-weighted SAMPLER enabled (HLAIIPred protocol; "
+              "balances cluster representation per epoch without shrinking loss)", flush=True)
+    if config.cluster_weighted and config.cluster_weighted_sampler:
+        print("[train] WARNING: both --cluster-weighted and --cluster-weighted-sampler "
+              "are on; this double-counts the down-weighting and is almost never desired",
+              flush=True)
     if config.allele_dropout > 0:
         print(f"[train] allele dropout p={config.allele_dropout} (HLAIIPred protocol)", flush=True)
     if config.dynamic_decoys:
@@ -458,14 +467,34 @@ def train(config: TrainConfig) -> Path:
         print("[train] dynamic per-epoch decoys enabled", flush=True)
 
     pin = device.type == "cuda"
-    train_loader = DataLoader(
-        _RecordDataset(train_records),
-        batch_size=config.batch_size,
-        shuffle=True,
-        collate_fn=collate,
-        num_workers=config.num_workers,
-        pin_memory=pin,
-    )
+
+    def _make_train_loader(records: list[MHC2Record]) -> "DataLoader":
+        if config.cluster_weighted_sampler:
+            from torch.utils.data import WeightedRandomSampler
+            weights = [max(r.cluster_weight, 1e-9) for r in records]
+            sampler = WeightedRandomSampler(
+                weights=torch.tensor(weights, dtype=torch.double),
+                num_samples=len(records),
+                replacement=True,
+            )
+            return DataLoader(
+                _RecordDataset(records),
+                batch_size=config.batch_size,
+                sampler=sampler,
+                collate_fn=collate,
+                num_workers=config.num_workers,
+                pin_memory=pin,
+            )
+        return DataLoader(
+            _RecordDataset(records),
+            batch_size=config.batch_size,
+            shuffle=True,
+            collate_fn=collate,
+            num_workers=config.num_workers,
+            pin_memory=pin,
+        )
+
+    train_loader = _make_train_loader(train_records)
     valid_loader = (
         DataLoader(
             _RecordDataset(valid_records),
@@ -532,14 +561,7 @@ def train(config: TrainConfig) -> Path:
                 f"(seed={config.seed + epoch * 10000})",
                 flush=True,
             )
-            train_loader = DataLoader(
-                _RecordDataset(train_records),
-                batch_size=config.batch_size,
-                shuffle=True,
-                collate_fn=collate,
-                num_workers=config.num_workers,
-                pin_memory=pin,
-            )
+            train_loader = _make_train_loader(train_records)
         model.train()
         total_loss = 0.0
         total_items = 0
