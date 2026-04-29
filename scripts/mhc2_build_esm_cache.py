@@ -143,6 +143,11 @@ def main() -> None:
     parser.add_argument("--skip-pseudoseqs", action="store_true")
     parser.add_argument("--legacy-dict", action="store_true",
                         help="Write legacy {name}.pt dict instead of packed memmap-able .bin/.idx.pt.")
+    parser.add_argument("--build-reversed", action="store_true",
+                        help="Also write peptides_rev.bin / peptides_rev.idx.pt with each "
+                             "peptide embedded *as if reversed* (C->N) for inverted-DP "
+                             "scoring. Indexed by the original forward sequence so train/predict "
+                             "can do `reversed_cache[peptide]` to get the reversed embedding.")
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -188,6 +193,18 @@ def main() -> None:
                 use_bf16=args.bf16,
                 source_files=tuple(str(p) for p in [args.train_jsonl, *extras, args.proteome_fasta]),
             )
+            if args.build_reversed:
+                print(f"[esm-cache] embedding REVERSED peptides for inverted-DP", flush=True)
+                cache_embeddings_packed(
+                    peptides,
+                    args.out,
+                    "peptides_rev",
+                    device=args.device,
+                    batch_size=args.batch_size,
+                    use_bf16=args.bf16,
+                    source_files=tuple(str(p) for p in [args.train_jsonl, *extras, args.proteome_fasta]),
+                    reverse_input=True,
+                )
 
     if not args.skip_pseudoseqs:
         pseudoseqs = collect_pseudoseqs(args.pseudosequences)

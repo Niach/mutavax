@@ -234,6 +234,7 @@ def cache_embeddings_packed(
     batch_size: int = 64,
     use_bf16: bool = True,
     source_files: Sequence[str] = (),
+    reverse_input: bool = False,
 ) -> ESMCacheManifest:
     """Embed unique sequences and write them as a *packed* memmap-able
     binary file plus a small index, instead of a dict of tensors.
@@ -252,6 +253,14 @@ def cache_embeddings_packed(
     The lookup dict maps sequence -> row index; ``starts``/``lengths`` give
     the slice into the binary blob. Workers can mmap the .bin file and
     share its pages without copying the per-sequence Python dict.
+
+    When ``reverse_input=True`` each sequence is reversed (C→N) BEFORE
+    embedding through ESM-2 and the resulting features are stored under
+    the *original* (forward) sequence as the lookup key. ESM-2 is not
+    equivariant under residue reversal (RoPE positional encodings break
+    the symmetry; verified empirically: cos-sim ≈ 0.80, not 1.0), so
+    this is the correct way to support inverted-DP scoring at training
+    and inference time.
     """
     import torch
 
@@ -283,10 +292,11 @@ def cache_embeddings_packed(
     with bin_path.open("wb") as bin_handle:
         for start in range(0, len(unique), batch_size):
             batch = unique[start : start + batch_size]
+            embed_input = [s[::-1] for s in batch] if reverse_input else batch
             features = embed_sequences(
                 model,
                 tokenizer,
-                batch,
+                embed_input,
                 device=device,
                 batch_size=batch_size,
                 use_bf16=use_bf16,

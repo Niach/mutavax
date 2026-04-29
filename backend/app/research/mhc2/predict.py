@@ -15,6 +15,7 @@ from typing import Sequence
 
 from app.research.mhc2.alleles import normalize_mhc2_allele
 from app.research.mhc2.data import load_pseudosequences
+from app.research.mhc2.metrics import locus_for_allele
 from app.research.mhc2.model import (
     PAD_INDEX,
     CorePrediction,
@@ -86,6 +87,22 @@ class MHC2Predictor:
             from app.research.mhc2.esm import load_packed_or_dict_cache, load_esm2_35m
             self.peptide_features = load_packed_or_dict_cache(esm_cache_dir, "peptides")
             self.pseudoseq_features = load_packed_or_dict_cache(esm_cache_dir, "pseudoseqs")
+            # Inverted DP: load reversed-peptide cache if the checkpoint
+            # was trained with --inverted-dp. Predict path then enumerates
+            # cores from both forward and reversed peptide for DP alleles.
+            self.inverted_dp = bool(payload.get("inverted_dp", False))
+            self.peptide_features_rev = None
+            if self.inverted_dp:
+                try:
+                    self.peptide_features_rev = load_packed_or_dict_cache(
+                        esm_cache_dir, "peptides_rev"
+                    )
+                except FileNotFoundError as exc:
+                    raise FileNotFoundError(
+                        f"checkpoint {checkpoint_path} was trained with inverted_dp=True "
+                        f"but {esm_cache_dir} has no peptides_rev cache. Build one with "
+                        "scripts/mhc2_build_esm_cache.py --build-reversed."
+                    ) from exc
             # We also need a live ESM model for OOC peptides at inference
             # time; benchmark sets are usually a subset of the cache so this
             # rarely fires.
@@ -94,6 +111,8 @@ class MHC2Predictor:
             self.model = MHCIIESMModel(**config).to(self.device)
         else:
             self.model_kind = "scratch"
+            self.inverted_dp = bool(payload.get("inverted_dp", False))
+            self.peptide_features_rev = None  # not supported on scratch
             self.model = MHCIIInteractionModel(**config).to(self.device)
         self.model.load_state_dict(payload["model_state"])
         self.model.eval()
@@ -109,7 +128,20 @@ class MHC2Predictor:
         pseudoseq = self.pseudosequences.get(normalized)
         if pseudoseq is None:
             raise KeyError(f"missing pseudosequence for {normalized}")
-        cores = enumerate_cores(peptide)
+        cores = list(enumerate_cores(peptide))
+        # Inverted DP: append reversed-peptide cores. core string is
+        # prefixed with "RC:" so the caller can tell which orientation
+        # won. Only matters at predict time; max-over-cores does the
+        # selection.
+        use_inverted = (
+            self.inverted_dp
+            and self.peptide_features_rev is not None
+            and locus_for_allele(normalized) == "DP"
+        )
+        n_forward = len(cores)
+        if use_inverted:
+            for offset, core in enumerate_cores(peptide[::-1]):
+                cores.append((offset, "RC:" + core))
 
         if self.model_kind == "scratch":
             core_tokens = torch.tensor(
@@ -132,7 +164,9 @@ class MHC2Predictor:
             pseudoseq_feat = self._lookup_pseudoseq_features(pseudoseq)
             core_feats = []
             core_pad = torch.zeros(9, self._esm_dim, dtype=torch.float32)
-            for offset, core in cores:
+            # Forward cores
+            for i in range(n_forward):
+                offset, _core = cores[i]
                 if len(peptide) >= 9:
                     sliced = peptide_feat[offset : offset + 9]
                 else:
@@ -142,6 +176,35 @@ class MHC2Predictor:
                     padded[: sliced.shape[0]] = sliced
                     sliced = padded
                 core_feats.append(sliced)
+            # Reversed cores (only when inverted-DP enabled and DP allele).
+            # Reversed-peptide features are indexed by FORWARD peptide string
+            # in the cache, but the underlying embedding is of peptide[::-1].
+            if use_inverted:
+                rev_feat = self.peptide_features_rev.get(peptide)
+                if rev_feat is None:
+                    # Fall back to live-embed of reversed peptide.
+                    from app.research.mhc2.esm import embed_sequences, load_esm2_35m
+                    if self._esm_model is None:
+                        self._esm_model, self._esm_tokenizer = load_esm2_35m(
+                            device=str(self.device)
+                        )
+                    rev_feats = embed_sequences(
+                        self._esm_model, self._esm_tokenizer, [peptide[::-1]],
+                        device=str(self.device), batch_size=1,
+                    )
+                    rev_feat = rev_feats[0]
+                rev_feat = rev_feat.float()
+                for i in range(n_forward, len(cores)):
+                    offset, _core = cores[i]
+                    if len(peptide) >= 9:
+                        sliced = rev_feat[offset : offset + 9]
+                    else:
+                        sliced = rev_feat
+                    if sliced.shape[0] < 9:
+                        padded = core_pad.clone()
+                        padded[: sliced.shape[0]] = sliced
+                        sliced = padded
+                    core_feats.append(sliced)
             cf = torch.stack(core_feats, dim=0).unsqueeze(0).to(self.device)  # [1, n_cores, 9, d]
             allele_pad = torch.zeros(self._max_pseudoseq_length, self._esm_dim,
                                      dtype=torch.float32)
@@ -190,6 +253,8 @@ class MHC2Predictor:
         normalized_alleles: list[str] = []
         pseudoseqs: list[str] = []
         cores_list: list[list[tuple[int, str]]] = []
+        n_forward_list: list[int] = []  # for inverted-DP: n_cores from forward peptide only
+        use_inverted_list: list[bool] = []  # whether reversed cores were appended
         for peptide, allele in pairs:
             normalized = normalize_mhc2_allele(allele).normalized
             pseudoseq = self.pseudosequences.get(normalized)
@@ -197,7 +262,18 @@ class MHC2Predictor:
                 raise KeyError(f"missing pseudosequence for {normalized}")
             normalized_alleles.append(normalized)
             pseudoseqs.append(pseudoseq)
-            cores_list.append(enumerate_cores(peptide))
+            forward_cores = list(enumerate_cores(peptide))
+            n_forward_list.append(len(forward_cores))
+            use_inv = (
+                self.inverted_dp
+                and self.peptide_features_rev is not None
+                and locus_for_allele(normalized) == "DP"
+            )
+            use_inverted_list.append(use_inv)
+            if use_inv:
+                for offset, core in enumerate_cores(peptide[::-1]):
+                    forward_cores.append((offset, "RC:" + core))
+            cores_list.append(forward_cores)
 
         out: list[PresentationPrediction | None] = [None] * len(pairs)
 
@@ -241,17 +317,46 @@ class MHC2Predictor:
                     (B, 1, self._max_pseudoseq_length, self._esm_dim),
                     dtype=torch.float32, device=self.device,
                 )
+                peptide_feat_rev_cache: dict[str, "torch.Tensor"] = {}
                 for local_b, idx in enumerate(chunk_indices):
                     peptide = pairs[idx][0]
                     if peptide not in peptide_feat_cache:
                         peptide_feat_cache[peptide] = self._lookup_peptide_features(peptide)
                     pep_feat = peptide_feat_cache[peptide]
-                    for c, (offset, _) in enumerate(cores_list[idx]):
+                    n_fwd = n_forward_list[idx]
+                    # Forward cores: slice from forward features.
+                    for c in range(n_fwd):
+                        offset, _core = cores_list[idx][c]
                         if len(peptide) >= 9:
                             sliced = pep_feat[offset : offset + 9]
                         else:
                             sliced = pep_feat
                         core_pad[local_b, c, : sliced.shape[0]] = sliced.to(self.device)
+                    # Reversed cores: slice from reversed features.
+                    if use_inverted_list[idx]:
+                        if peptide not in peptide_feat_rev_cache:
+                            rev_feat = self.peptide_features_rev.get(peptide)
+                            if rev_feat is None:
+                                # Live-embed reversed peptide as fallback.
+                                from app.research.mhc2.esm import embed_sequences, load_esm2_35m
+                                if self._esm_model is None:
+                                    self._esm_model, self._esm_tokenizer = load_esm2_35m(
+                                        device=str(self.device)
+                                    )
+                                rev_feats = embed_sequences(
+                                    self._esm_model, self._esm_tokenizer, [peptide[::-1]],
+                                    device=str(self.device), batch_size=1,
+                                )
+                                rev_feat = rev_feats[0]
+                            peptide_feat_rev_cache[peptide] = rev_feat.float()
+                        rev_feat = peptide_feat_rev_cache[peptide]
+                        for c in range(n_fwd, len(cores_list[idx])):
+                            offset, _core = cores_list[idx][c]
+                            if len(peptide) >= 9:
+                                sliced = rev_feat[offset : offset + 9]
+                            else:
+                                sliced = rev_feat
+                            core_pad[local_b, c, : sliced.shape[0]] = sliced.to(self.device)
                     if pseudoseqs[idx] not in pseudoseq_feat_cache:
                         pseudoseq_feat_cache[pseudoseqs[idx]] = self._lookup_pseudoseq_features(
                             pseudoseqs[idx]

@@ -77,6 +77,12 @@ def main() -> None:
                              "'balanced'/'inverse_frequency' = weight ∝ N/(n_loci * count[locus]) "
                              "so each locus contributes equal mass to total loss. "
                              "'sqrt_inverse' = gentler 1/sqrt(count[locus]) variant.")
+    parser.add_argument("--inverted-dp", action="store_true",
+                        help="HLA-DP inverted binding: also score the reversed peptide "
+                             "(C->N) for DP records and let the existing max-over-cores "
+                             "pick the best orientation. Recipe-mandated for 2026 SOTA on "
+                             "DP. Requires a peptides_rev.bin cache built with "
+                             "scripts/mhc2_build_esm_cache.py --build-reversed.")
     args = parser.parse_args()
 
     checkpoint = train(
@@ -117,6 +123,7 @@ def main() -> None:
             allele_dropout=args.allele_dropout,
             dynamic_decoys=args.dynamic_decoys,
             locus_upweight=args.locus_upweight,
+            inverted_dp=args.inverted_dp,
         )
     )
     print(checkpoint)

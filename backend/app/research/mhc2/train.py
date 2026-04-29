@@ -65,6 +65,7 @@ if TORCH_AVAILABLE:  # pragma: no cover
             esm_dim: int,
             max_pseudoseq_length: int,
             locus_weight_map: dict[str, float] | None = None,
+            peptide_features_rev: dict | None = None,
         ) -> None:
             self.peptide_features = peptide_features
             self.pseudoseq_features = pseudoseq_features
@@ -72,6 +73,11 @@ if TORCH_AVAILABLE:  # pragma: no cover
             self.esm_dim = esm_dim
             self.max_pseudoseq_length = max_pseudoseq_length
             self.locus_weight_map = locus_weight_map
+            # When set, append cores from the reversed peptide for DP samples
+            # so the model's existing max-over-cores effectively scores both
+            # orientations and picks the better one. Lookup keyed by FORWARD
+            # peptide; the cache holds features of the reversed embedding.
+            self.peptide_features_rev = peptide_features_rev
 
         def _peptide_features(self, record: MHC2Record) -> "_torch.Tensor":
             feat = self.peptide_features.get(record.peptide)
@@ -85,7 +91,20 @@ if TORCH_AVAILABLE:  # pragma: no cover
             return feat
 
         def __call__(self, records: list[MHC2Record]) -> tuple:
-            max_cores = max(len(enumerate_cores(record.peptide)) for record in records)
+            # When inverted-DP is on, DP records emit double cores
+            # (forward + reversed-peptide cores). max_cores must reflect
+            # that so the batch tensor is wide enough.
+            def _record_n_cores(record: MHC2Record) -> int:
+                n = len(enumerate_cores(record.peptide))
+                if (
+                    self.peptide_features_rev is not None
+                    and record.alleles
+                    and _locus_for(record.alleles[0]) == "DP"
+                ):
+                    return 2 * n
+                return n
+
+            max_cores = max(_record_n_cores(r) for r in records)
             max_alleles = max(len(record.alleles) for record in records)
             core_pad = _torch.zeros(9, self.esm_dim, dtype=_torch.float32)
             allele_pad = _torch.zeros(self.max_pseudoseq_length, self.esm_dim, dtype=_torch.float32)
@@ -111,6 +130,29 @@ if TORCH_AVAILABLE:  # pragma: no cover
                         padded[: sliced.shape[0]] = sliced
                         sliced = padded
                     core_tensors.append(sliced)
+                # Inverted DP: append reversed-peptide cores so the
+                # downstream max-over-cores effectively scores both
+                # orientations. Only DP records use this; non-DP records
+                # see standard forward cores only (and pad zeros for the
+                # extra slots, auto-masked by the model).
+                if (
+                    self.peptide_features_rev is not None
+                    and record.alleles
+                    and _locus_for(record.alleles[0]) == "DP"
+                ):
+                    rev_feat = self.peptide_features_rev.get(record.peptide)
+                    if rev_feat is not None:
+                        rev_feat = rev_feat.float()
+                        for offset, _core in enumerate_cores(record.peptide[::-1]):
+                            if len(record.peptide) >= 9:
+                                sliced = rev_feat[offset : offset + 9]
+                            else:
+                                sliced = rev_feat
+                            if sliced.shape[0] < 9:
+                                padded = core_pad.clone()
+                                padded[: sliced.shape[0]] = sliced
+                                sliced = padded
+                            core_tensors.append(sliced)
                 core_mask = [True] * len(core_tensors)
                 while len(core_tensors) < max_cores:
                     core_tensors.append(core_pad)
@@ -265,6 +307,7 @@ class TrainConfig:
     allele_dropout: float = 0.0  # HLAIIPred-style: per-step probability of masking each allele
     dynamic_decoys: bool = False  # regenerate decoys at the start of each epoch (HLAIIPred protocol)
     locus_upweight: str = "none"  # "none" | "balanced" | "inverse_frequency" | "sqrt_inverse"
+    inverted_dp: bool = False  # also score reversed peptides for DP records (recipe-mandated for HLA-DP)
 
 
 def _multi_task_loss(
@@ -447,6 +490,23 @@ def train(config: TrainConfig) -> Path:
         print(f"[train] loading ESM caches from {config.esm_cache_dir}", flush=True)
         peptide_features = load_packed_or_dict_cache(config.esm_cache_dir, "peptides")
         pseudoseq_features = load_packed_or_dict_cache(config.esm_cache_dir, "pseudoseqs")
+        peptide_features_rev = None
+        if config.inverted_dp:
+            try:
+                peptide_features_rev = load_packed_or_dict_cache(
+                    config.esm_cache_dir, "peptides_rev"
+                )
+                print(
+                    f"[train] inverted-DP: loaded reversed peptide cache "
+                    f"({len(peptide_features_rev)} entries)",
+                    flush=True,
+                )
+            except FileNotFoundError as exc:
+                raise FileNotFoundError(
+                    "--inverted-dp requires a peptides_rev.bin cache built with "
+                    "scripts/mhc2_build_esm_cache.py --build-reversed. Missing in "
+                    f"{config.esm_cache_dir}."
+                ) from exc
         print(
             f"[train] esm cache: {len(peptide_features)} peptides "
             f"({type(peptide_features).__name__}), "
@@ -461,8 +521,15 @@ def train(config: TrainConfig) -> Path:
             esm_dim=config.esm_dim,
             max_pseudoseq_length=config.max_pseudoseq_length,
             locus_weight_map=locus_weight_map,
+            peptide_features_rev=peptide_features_rev,
         )
     else:
+        if config.inverted_dp:
+            raise ValueError(
+                "--inverted-dp is only supported with --model-kind esm2_35m "
+                "(scratch model would need reversed-peptide token encoding too; "
+                "not yet implemented)."
+            )
         collate = _Collator(
             pseudosequences,
             config.max_pseudoseq_length,
@@ -617,6 +684,9 @@ def train(config: TrainConfig) -> Path:
                 "history": history,
                 "decoy_stats": asdict(decoy_stats) if decoy_stats else None,
                 "epoch": epoch,
+                # Inference-time metadata: predict.py reads these to know
+                # whether to enable inverted-DP scoring at predict time.
+                "inverted_dp": config.inverted_dp,
             },
             path,
         )
