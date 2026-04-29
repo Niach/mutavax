@@ -46,6 +46,7 @@ class OurModelAdapter(BaselineModel):
         ok, msg = self.is_available()
         if not ok:
             raise RuntimeError(msg)
+        from app.research.mhc2.alleles import normalize_mhc2_allele
         from app.research.mhc2.predict import MHC2Predictor
 
         device = self._resolve_device()
@@ -55,25 +56,44 @@ class OurModelAdapter(BaselineModel):
             device=device,
             esm_cache_dir=self._esm_cache_dir,
         )
-        out: list[BaselinePrediction] = []
-        for peptide, allele in pairs:
+
+        # Pre-filter pairs whose allele has no pseudoseq; mark NaN so a
+        # single rare allele doesn't crash the whole batched call.
+        out: list[BaselinePrediction | None] = [None] * len(pairs)
+        keep_indices: list[int] = []
+        keep_pairs: list[tuple[str, str]] = []
+        for idx, (peptide, allele) in enumerate(pairs):
             try:
-                prediction = predictor.predict_one(peptide, allele)
-            except (KeyError, ValueError):
-                out.append(BaselinePrediction(
+                normalized = normalize_mhc2_allele(allele).normalized
+            except ValueError:
+                out[idx] = BaselinePrediction(
                     peptide=peptide, allele=allele,
                     score=float("nan"), rank_percent=float("nan"),
-                ))
+                )
                 continue
-            out.append(BaselinePrediction(
-                peptide=peptide,
-                allele=allele,
-                score=float(prediction.score),
-                rank_percent=float(prediction.percentile_rank or float("nan")),
-                core=prediction.core,
-                offset=prediction.core_offset,
-            ))
-        return out
+            if normalized not in predictor.pseudosequences:
+                out[idx] = BaselinePrediction(
+                    peptide=peptide, allele=allele,
+                    score=float("nan"), rank_percent=float("nan"),
+                )
+                continue
+            keep_indices.append(idx)
+            keep_pairs.append((peptide, allele))
+
+        if keep_pairs:
+            predictions = predictor.predict_many(keep_pairs, batch_size=self._batch_size)
+            for idx, prediction in zip(keep_indices, predictions):
+                peptide, allele = pairs[idx]
+                out[idx] = BaselinePrediction(
+                    peptide=peptide,
+                    allele=allele,
+                    score=float(prediction.score),
+                    rank_percent=float(prediction.percentile_rank or float("nan")),
+                    core=prediction.core,
+                    offset=prediction.core_offset,
+                )
+
+        return [item for item in out if item is not None]
 
     def _resolve_device(self) -> str:
         if self._device != "auto":

@@ -84,46 +84,62 @@ class HLAIIPredAdapter(BaselineModel):
         if not ok:
             raise RuntimeError(msg)
         import numpy as np
-        import torch
+        from collections import defaultdict
         from hlapred.predict import HLAIIPredict
 
         device = self._resolve_device()
+        predictors = [
+            HLAIIPredict(self._model_dir, idx, device, self._mhc2_dir)
+            for idx in (0, 1)
+        ]
 
-        peptides: list[str] = []
-        allele_inputs: list[list] = []
-        external_alleles: list[str] = []  # original allele kept for output rows
-        for peptide, allele in pairs:
-            peptides.append(peptide)
-            external_alleles.append(allele)
+        # Group by HLAIIPred-formatted allele so an unsupported allele only
+        # NaNs out its own group instead of crashing the whole batch.
+        # HLAIIPred raises KeyError inside prepare_input when the alpha or
+        # beta chain isn't in its bundled mhcII/{alpha,beta}_dict.
+        groups: dict[str, list[int]] = defaultdict(list)
+        converted_alleles: list[str] = []
+        for idx, (_peptide, allele) in enumerate(pairs):
             converted = _to_hlaiipred_allele(allele)
-            # 14 allele slots; unused slots are int 0 per the example.
-            slot = [converted] + [0] * 13
-            allele_inputs.append(slot)
+            converted_alleles.append(converted)
+            groups[converted].append(idx)
 
-        ensemble: list[np.ndarray] = []
-        for model_idx in (0, 1):
-            predictor = HLAIIPredict(
-                self._model_dir,
-                model_idx,
-                device,
-                self._mhc2_dir,
-            )
-            inputs = predictor.prepare_input(peptides, allele_inputs)
-            y_pred, _ = predictor.predict(inputs, batch_size=self._batch_size, sigmoid=True)
-            ensemble.append(np.asarray(y_pred, dtype=float))
+        out: list[BaselinePrediction | None] = [None] * len(pairs)
+        for converted, indices in groups.items():
+            group_peptides = [pairs[i][0] for i in indices]
+            slots = [[converted] + [0] * 13 for _ in indices]
+            try:
+                ensemble = []
+                for predictor in predictors:
+                    inputs = predictor.prepare_input(group_peptides, slots)
+                    y_pred, _ = predictor.predict(
+                        inputs, batch_size=self._batch_size, sigmoid=True
+                    )
+                    ensemble.append(np.asarray(y_pred, dtype=float))
+                scores = (ensemble[0] + ensemble[1]) / 2.0
+                for local_i, idx in enumerate(indices):
+                    peptide, allele = pairs[idx]
+                    out[idx] = BaselinePrediction(
+                        peptide=peptide,
+                        allele=allele,
+                        score=float(scores[local_i]),
+                        rank_percent=float("nan"),
+                    )
+            except KeyError:
+                # Unsupported allele in HLAIIPred's reference dictionaries
+                # (e.g. rare DPB1*10:401). Mark group as NaN so polyallelic
+                # max-over-alleles can still try other alleles for the same
+                # record. Mirrors NetMHCIIpan / MixMHC2pred adapter policy.
+                for idx in indices:
+                    peptide, allele = pairs[idx]
+                    out[idx] = BaselinePrediction(
+                        peptide=peptide,
+                        allele=allele,
+                        score=float("nan"),
+                        rank_percent=float("nan"),
+                    )
 
-        scores = (ensemble[0] + ensemble[1]) / 2.0
-        out: list[BaselinePrediction] = []
-        for peptide, allele, score in zip(peptides, external_alleles, scores):
-            out.append(
-                BaselinePrediction(
-                    peptide=peptide,
-                    allele=allele,
-                    score=float(score),
-                    rank_percent=float("nan"),
-                )
-            )
-        return out
+        return [item for item in out if item is not None]
 
 
 def _to_hlaiipred_allele(allele: str) -> str:
