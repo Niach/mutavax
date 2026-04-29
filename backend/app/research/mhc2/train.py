@@ -64,12 +64,14 @@ if TORCH_AVAILABLE:  # pragma: no cover
             pseudosequences: dict[str, str],
             esm_dim: int,
             max_pseudoseq_length: int,
+            locus_weight_map: dict[str, float] | None = None,
         ) -> None:
             self.peptide_features = peptide_features
             self.pseudoseq_features = pseudoseq_features
             self.pseudosequences = pseudosequences
             self.esm_dim = esm_dim
             self.max_pseudoseq_length = max_pseudoseq_length
+            self.locus_weight_map = locus_weight_map
 
         def _peptide_features(self, record: MHC2Record) -> "_torch.Tensor":
             feat = self.peptide_features.get(record.peptide)
@@ -138,6 +140,10 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 label_types.append(1 if record.label_type == "affinity" else 0)
                 ba_values.append(record.ba_value if record.ba_value is not None else 0.0)
                 sample_weights.append(record.cluster_weight)
+            locus_weights = [
+                self.locus_weight_map.get(_locus_for(a), 1.0) if self.locus_weight_map else 1.0
+                for a in primary_alleles
+            ]
             return (
                 _torch.stack(batch_core, dim=0),
                 _torch.stack(batch_allele, dim=0),
@@ -148,14 +154,21 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 _torch.tensor(label_types, dtype=_torch.long),
                 _torch.tensor(ba_values, dtype=_torch.float32),
                 _torch.tensor(sample_weights, dtype=_torch.float32),
+                _torch.tensor(locus_weights, dtype=_torch.float32),
             )
 
     class _Collator:
         """Module-level callable so DataLoader workers can pickle it."""
 
-        def __init__(self, pseudosequences: dict[str, str], max_pseudoseq_length: int) -> None:
+        def __init__(
+            self,
+            pseudosequences: dict[str, str],
+            max_pseudoseq_length: int,
+            locus_weight_map: dict[str, float] | None = None,
+        ) -> None:
             self.pseudosequences = pseudosequences
             self.max_pseudoseq_length = max_pseudoseq_length
+            self.locus_weight_map = locus_weight_map
 
         def __call__(self, records: list[MHC2Record]) -> tuple:
             max_cores = max(len(enumerate_cores(record.peptide)) for record in records)
@@ -193,6 +206,10 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 label_types.append(1 if record.label_type == "affinity" else 0)
                 ba_values.append(record.ba_value if record.ba_value is not None else 0.0)
                 sample_weights.append(record.cluster_weight)
+            locus_weights = [
+                self.locus_weight_map.get(_locus_for(a), 1.0) if self.locus_weight_map else 1.0
+                for a in primary_alleles
+            ]
             return (
                 _torch.tensor(core_batch, dtype=_torch.long),
                 _torch.tensor(allele_batch, dtype=_torch.long),
@@ -203,6 +220,7 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 _torch.tensor(label_types, dtype=_torch.long),
                 _torch.tensor(ba_values, dtype=_torch.float32),
                 _torch.tensor(sample_weights, dtype=_torch.float32),
+                _torch.tensor(locus_weights, dtype=_torch.float32),
             )
 
 
@@ -246,6 +264,7 @@ class TrainConfig:
     allele_aggregation: str = "max"  # "max" or "logsumexp" for soft polyallelic deconvolution
     allele_dropout: float = 0.0  # HLAIIPred-style: per-step probability of masking each allele
     dynamic_decoys: bool = False  # regenerate decoys at the start of each epoch (HLAIIPred protocol)
+    locus_upweight: str = "none"  # "none" | "balanced" | "inverse_frequency" | "sqrt_inverse"
 
 
 def _multi_task_loss(
@@ -257,11 +276,16 @@ def _multi_task_loss(
     loss_fn,
     ba_loss_fn,
     config: "TrainConfig",
+    locus_weights=None,
 ):
     """Combined EL (BCE) + BA (MSE on log-affinity) loss with optional
-    cluster weighting. ``model_out`` is either ``(sample_logits, grid)``
+    cluster + locus weighting. ``model_out`` is either ``(sample_logits, grid)``
     when ``with_ba_head=False`` or ``(sample_logits, grid, ba_logits)``
-    when the BA head is enabled."""
+    when the BA head is enabled.
+
+    ``sample_weights`` are applied only when ``cluster_weighted`` is on.
+    ``locus_weights`` are always applied when supplied (the collator only
+    emits non-trivial weights when ``locus_upweight != 'none'``)."""
     sample_logits = model_out[0]
     el_mask = label_types == 0
     ba_mask = label_types == 1
@@ -270,6 +294,8 @@ def _multi_task_loss(
     el_loss = loss_fn(sample_logits, labels)  # per-record (reduction='none')
     if weights is not None:
         el_loss = el_loss * weights
+    if locus_weights is not None and config.locus_upweight != "none":
+        el_loss = el_loss * locus_weights
     if el_mask.any():
         el_term = el_loss[el_mask].mean()
     else:
@@ -281,6 +307,8 @@ def _multi_task_loss(
         ba_loss = ba_loss_fn(ba_pred, ba_values)
         if weights is not None:
             ba_loss = ba_loss * weights
+        if locus_weights is not None and config.locus_upweight != "none":
+            ba_loss = ba_loss * locus_weights
         ba_term = ba_loss[ba_mask].mean()
         return el_term + config.ba_loss_weight * ba_term
     return el_term
@@ -303,6 +331,43 @@ def _locus_for(allele: str) -> str:
     if body.startswith("DP"):
         return "DP"
     return "other"
+
+
+def _compute_locus_weights(
+    records: list[MHC2Record], scheme: str
+) -> dict[str, float] | None:
+    """Per-locus loss multiplier map for ``locus_upweight`` ablations.
+
+    - ``none``: returns ``None`` (no reweighting; collator emits weight=1).
+    - ``balanced``: each locus contributes equally (weight = num_loci / N
+      so the total loss-weight mass is preserved).
+    - ``inverse_frequency``: weight ∝ 1/count[locus], normalized so the
+      mean weight across records equals 1.
+    - ``sqrt_inverse``: gentler version, weight ∝ 1/sqrt(count[locus]).
+    """
+    if scheme == "none":
+        return None
+    counts: dict[str, int] = defaultdict(int)
+    for record in records:
+        primary = record.alleles[0] if record.alleles else "other"
+        counts[_locus_for(primary)] += 1
+    counts = dict(counts)  # freeze
+    n = sum(counts.values())
+    if n == 0 or not counts:
+        return None
+    if scheme == "balanced":
+        n_loci = len(counts)
+        return {locus: float(n) / (n_loci * count) for locus, count in counts.items()}
+    if scheme == "inverse_frequency":
+        n_loci = len(counts)
+        return {locus: float(n) / (n_loci * count) for locus, count in counts.items()}
+    if scheme == "sqrt_inverse":
+        # Normalize so mean record weight = 1 (preserve gradient scale).
+        raw = {locus: 1.0 / (count ** 0.5) for locus, count in counts.items()}
+        mean_w = sum(raw[_locus_for(r.alleles[0] if r.alleles else "other")]
+                     for r in records) / n
+        return {locus: w / mean_w for locus, w in raw.items()}
+    raise ValueError(f"unknown locus_upweight scheme: {scheme!r}")
 
 
 def train(config: TrainConfig) -> Path:
@@ -366,6 +431,14 @@ def train(config: TrainConfig) -> Path:
             valid_records = valid_positives
         print(f"[train] valid records: {len(valid_records)}", flush=True)
 
+    locus_weight_map = _compute_locus_weights(train_records, config.locus_upweight)
+    if locus_weight_map is not None:
+        print(
+            f"[train] locus upweight ({config.locus_upweight}): "
+            + ", ".join(f"{k}={v:.3f}" for k, v in sorted(locus_weight_map.items())),
+            flush=True,
+        )
+
     if config.model_kind == "esm2_35m":
         from app.research.mhc2.esm import load_packed_or_dict_cache
 
@@ -387,9 +460,14 @@ def train(config: TrainConfig) -> Path:
             pseudosequences=pseudosequences,
             esm_dim=config.esm_dim,
             max_pseudoseq_length=config.max_pseudoseq_length,
+            locus_weight_map=locus_weight_map,
         )
     else:
-        collate = _Collator(pseudosequences, config.max_pseudoseq_length)
+        collate = _Collator(
+            pseudosequences,
+            config.max_pseudoseq_length,
+            locus_weight_map=locus_weight_map,
+        )
 
     if config.model_kind == "esm2_35m":
         model_config = {
@@ -570,6 +648,7 @@ def train(config: TrainConfig) -> Path:
             (
                 core_tokens, allele_tokens, core_mask, allele_mask,
                 labels, _, label_types, ba_values, sample_weights,
+                locus_weights,
             ) = batch
             core_tokens = core_tokens.to(device, non_blocking=pin)
             allele_tokens = allele_tokens.to(device, non_blocking=pin)
@@ -579,6 +658,7 @@ def train(config: TrainConfig) -> Path:
             label_types = label_types.to(device, non_blocking=pin)
             ba_values = ba_values.to(device, non_blocking=pin)
             sample_weights = sample_weights.to(device, non_blocking=pin)
+            locus_weights = locus_weights.to(device, non_blocking=pin)
             # HLAIIPred-style allele-score dropout: per-step, mask each
             # currently-valid allele independently with probability p, but
             # always keep at least one allele per sample so the loss has a
@@ -606,6 +686,7 @@ def train(config: TrainConfig) -> Path:
                     loss = _multi_task_loss(
                         out, labels, label_types, ba_values, sample_weights,
                         loss_fn, ba_loss_fn, config,
+                        locus_weights=locus_weights,
                     )
             else:
                 out = model(

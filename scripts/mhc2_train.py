@@ -70,6 +70,13 @@ def main() -> None:
     parser.add_argument("--dynamic-decoys", action="store_true",
                         help="Regenerate length-matched decoys at the start of each epoch "
                              "instead of fixing them once (HLAIIPred protocol).")
+    parser.add_argument("--locus-upweight",
+                        choices=["none", "balanced", "inverse_frequency", "sqrt_inverse"],
+                        default="none",
+                        help="Per-locus loss reweighting. 'none' (default) = no reweighting. "
+                             "'balanced'/'inverse_frequency' = weight ∝ N/(n_loci * count[locus]) "
+                             "so each locus contributes equal mass to total loss. "
+                             "'sqrt_inverse' = gentler 1/sqrt(count[locus]) variant.")
     args = parser.parse_args()
 
     checkpoint = train(
@@ -109,6 +116,7 @@ def main() -> None:
             allele_aggregation=args.allele_aggregation,
             allele_dropout=args.allele_dropout,
             dynamic_decoys=args.dynamic_decoys,
+            locus_upweight=args.locus_upweight,
         )
     )
     print(checkpoint)
