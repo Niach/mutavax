@@ -160,7 +160,8 @@ def main() -> None:
 
     print(f"[esm-cache] using {ESM_MODEL_ID} on {args.device}", flush=True)
 
-    if not args.skip_peptides:
+    peptides = None
+    if not args.skip_peptides or args.build_reversed:
         print(
             f"[esm-cache] enumerating peptides: train + {len(extras)} extras "
             f"+ decoys ({args.decoys_per_positive}x, seed={args.seed})",
@@ -174,6 +175,8 @@ def main() -> None:
             seed=args.seed,
         )
         print(f"[esm-cache] unique peptides: {len(peptides)}", flush=True)
+
+    if not args.skip_peptides:
         if args.legacy_dict:
             cache_embeddings_to_disk(
                 peptides,
@@ -193,18 +196,19 @@ def main() -> None:
                 use_bf16=args.bf16,
                 source_files=tuple(str(p) for p in [args.train_jsonl, *extras, args.proteome_fasta]),
             )
-            if args.build_reversed:
-                print(f"[esm-cache] embedding REVERSED peptides for inverted-DP", flush=True)
-                cache_embeddings_packed(
-                    peptides,
-                    args.out,
-                    "peptides_rev",
-                    device=args.device,
-                    batch_size=args.batch_size,
-                    use_bf16=args.bf16,
-                    source_files=tuple(str(p) for p in [args.train_jsonl, *extras, args.proteome_fasta]),
-                    reverse_input=True,
-                )
+
+    if args.build_reversed:
+        print(f"[esm-cache] embedding REVERSED peptides for inverted-DP", flush=True)
+        cache_embeddings_packed(
+            peptides,
+            args.out,
+            "peptides_rev",
+            device=args.device,
+            batch_size=args.batch_size,
+            use_bf16=args.bf16,
+            source_files=tuple(str(p) for p in [args.train_jsonl, *extras, args.proteome_fasta]),
+            reverse_input=True,
+        )
 
     if not args.skip_pseudoseqs:
         pseudoseqs = collect_pseudoseqs(args.pseudosequences)
