@@ -57,6 +57,20 @@ _ESM_KEYS = {"esm_dim", "adapter_layers", "adapter_heads", "adapter_hidden"}
 _SCRATCH_KEYS = {"embedding_dim", "hidden_dim", "attention_heads", "num_layers"}
 
 
+class _NullCache:
+    """Stand-in for PackedPeptideCache when no cache is available.
+    Every lookup misses → predict.py's live-embed fallback runs."""
+
+    def get(self, key, default=None):
+        return default
+
+    def __contains__(self, key):
+        return False
+
+    def __len__(self):
+        return 0
+
+
 class MHC2Predictor:
     def __init__(
         self,
@@ -80,29 +94,38 @@ class MHC2Predictor:
         is_esm = bool(set(config.keys()) & _ESM_KEYS)
         if is_esm:
             self.model_kind = "esm2_35m"
-            if esm_cache_dir is None:
-                raise ValueError(
-                    f"checkpoint {checkpoint_path} is an ESM model but no esm_cache_dir was provided"
-                )
-            from app.research.mhc2.esm import load_packed_or_dict_cache, load_esm2_35m
-            self.peptide_features = load_packed_or_dict_cache(esm_cache_dir, "peptides")
-            self.pseudoseq_features = load_packed_or_dict_cache(esm_cache_dir, "pseudoseqs")
-            # Inverted DP: load reversed-peptide cache if the checkpoint
-            # was trained with --inverted-dp. Predict path then enumerates
-            # cores from both forward and reversed peptide for DP alleles.
             self.inverted_dp = bool(payload.get("inverted_dp", False))
-            self.peptide_features_rev = None
-            if self.inverted_dp:
-                try:
-                    self.peptide_features_rev = load_packed_or_dict_cache(
-                        esm_cache_dir, "peptides_rev"
+            expected_dim = int(config.get("esm_dim", 480))
+            if esm_cache_dir is None:
+                # Live-embed everything path. Currently only supports the
+                # 35M variant (480 dim) — for larger ESM checkpoints, pass
+                # the matching cache so we don't load the wrong PLM.
+                if expected_dim != 480:
+                    raise ValueError(
+                        f"checkpoint {checkpoint_path} expects esm_dim={expected_dim}, "
+                        "live-embed only supports 35M (480 dim). Pass --esm-cache-dir."
                     )
-                except FileNotFoundError as exc:
-                    raise FileNotFoundError(
-                        f"checkpoint {checkpoint_path} was trained with inverted_dp=True "
-                        f"but {esm_cache_dir} has no peptides_rev cache. Build one with "
-                        "scripts/mhc2_build_esm_cache.py --build-reversed."
-                    ) from exc
+                self.peptide_features = _NullCache()
+                self.pseudoseq_features = _NullCache()
+                self.peptide_features_rev = _NullCache() if self.inverted_dp else None
+            else:
+                from app.research.mhc2.esm import load_packed_or_dict_cache
+                self.peptide_features = load_packed_or_dict_cache(esm_cache_dir, "peptides")
+                self.pseudoseq_features = load_packed_or_dict_cache(esm_cache_dir, "pseudoseqs")
+                # Inverted DP: load reversed-peptide cache if the checkpoint
+                # was trained with --inverted-dp.
+                self.peptide_features_rev = None
+                if self.inverted_dp:
+                    try:
+                        self.peptide_features_rev = load_packed_or_dict_cache(
+                            esm_cache_dir, "peptides_rev"
+                        )
+                    except FileNotFoundError as exc:
+                        raise FileNotFoundError(
+                            f"checkpoint {checkpoint_path} was trained with inverted_dp=True "
+                            f"but {esm_cache_dir} has no peptides_rev cache. Build one with "
+                            "scripts/mhc2_build_esm_cache.py --build-reversed."
+                        ) from exc
             # We also need a live ESM model for OOC peptides at inference
             # time; benchmark sets are usually a subset of the cache so this
             # rarely fires.
