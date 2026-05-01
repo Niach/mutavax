@@ -89,6 +89,15 @@ def main() -> None:
                              "before the scorer. Targets the long-peptide (≥20 aa) "
                              "FRANK degradation. Adds 3 input dims to the scorer; "
                              "checkpoints record the flag so predictor reloads match.")
+    parser.add_argument("--use-chain-boundary", action="store_true",
+                        help="Add a learned 2-vocab segment embedding (α=0..14, β=15..33) "
+                             "to per-residue allele features before the encoder. "
+                             "Targets the DP/DQ heterodimer FRANK weakness. NetMHCIIpan-4.3 "
+                             "pseudoseq layout is fixed: positions 0-14 = α-chain, "
+                             "15-33 = β-chain.")
+    parser.add_argument("--alpha-chain-length", type=int, default=15,
+                        help="Boundary position. Default 15 matches the NetMHCIIpan-4.3 "
+                             "convention. Only used when --use-chain-boundary is on.")
     parser.add_argument("--eval-fa-sentinel", type=Path, default=None,
                         help="Path to NetMHCIIpan_eval.fa. If set, a stratified subset is "
                              "scored after each epoch and merged into history.json under "
@@ -139,6 +148,8 @@ def main() -> None:
             locus_upweight=args.locus_upweight,
             inverted_dp=args.inverted_dp,
             use_length_features=args.use_length_features,
+            use_chain_boundary=args.use_chain_boundary,
+            alpha_chain_length=args.alpha_chain_length,
             eval_fa_sentinel_path=args.eval_fa_sentinel,
             eval_fa_sentinel_n=args.eval_fa_sentinel_n,
             eval_fa_sentinel_seed=args.eval_fa_sentinel_seed,

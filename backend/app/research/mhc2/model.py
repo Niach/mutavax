@@ -118,6 +118,8 @@ if TORCH_AVAILABLE:  # pragma: no cover
             with_ba_head: bool = False,
             allele_aggregation: str = "max",
             use_length_features: bool = False,
+            use_chain_boundary: bool = False,
+            alpha_chain_length: int = 15,
         ) -> None:
             super().__init__()
             self.esm_dim = esm_dim
@@ -129,6 +131,19 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 )
             self.allele_aggregation = allele_aggregation
             self.use_length_features = use_length_features
+            self.use_chain_boundary = use_chain_boundary
+            self.alpha_chain_length = alpha_chain_length
+            if use_chain_boundary:
+                # NetMHCIIpan-4.3 convention: 34-aa pseudoseq is α-chain
+                # contact residues followed by β-chain contact residues.
+                # DR alleles share the first 15 (DRA is conserved); DP/DQ
+                # heterodimers vary across both halves. We mark the boundary
+                # with a learned segment embedding added to per-residue
+                # allele features before the adapter.
+                self.chain_segment_emb = nn.Embedding(2, esm_dim)
+                seg_ids = torch.zeros(max_pseudoseq_length, dtype=torch.long)
+                seg_ids[alpha_chain_length:] = 1
+                self.register_buffer("_segment_ids", seg_ids, persistent=False)
             scorer_in = esm_dim * 3 + (3 if use_length_features else 0)
             self.core_adapter = nn.TransformerEncoder(
                 nn.TransformerEncoderLayer(
@@ -181,6 +196,10 @@ if TORCH_AVAILABLE:  # pragma: no cover
         ) -> tuple[Tensor, Tensor]:
             batch, n_cores, core_len, dim = core_feats.shape
             _, n_alleles, allele_len, _ = allele_feats.shape
+
+            if self.use_chain_boundary:
+                seg_emb = self.chain_segment_emb(self._segment_ids[:allele_len])
+                allele_feats = allele_feats + seg_emb[None, None, :, :]
 
             core_flat = core_feats.reshape(batch * n_cores, core_len, dim)
             allele_flat = allele_feats.reshape(batch * n_alleles, allele_len, dim)
@@ -265,6 +284,8 @@ if TORCH_AVAILABLE:  # pragma: no cover
             with_ba_head: bool = False,
             allele_aggregation: str = "max",
             use_length_features: bool = False,
+            use_chain_boundary: bool = False,
+            alpha_chain_length: int = 15,
         ) -> None:
             super().__init__()
             self.max_pseudoseq_length = max_pseudoseq_length
@@ -275,6 +296,13 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 )
             self.allele_aggregation = allele_aggregation
             self.use_length_features = use_length_features
+            self.use_chain_boundary = use_chain_boundary
+            self.alpha_chain_length = alpha_chain_length
+            if use_chain_boundary:
+                self.chain_segment_emb = nn.Embedding(2, embedding_dim)
+                seg_ids = torch.zeros(max_pseudoseq_length, dtype=torch.long)
+                seg_ids[alpha_chain_length:] = 1
+                self.register_buffer("_segment_ids", seg_ids, persistent=False)
             scorer_in = embedding_dim * 3 + (3 if use_length_features else 0)
             self.embedding = nn.Embedding(
                 len(VOCAB) + 1, embedding_dim, padding_idx=PAD_INDEX
@@ -337,7 +365,11 @@ if TORCH_AVAILABLE:  # pragma: no cover
             core_flat = core_tokens.reshape(batch * n_cores, core_len)
             allele_flat = allele_tokens.reshape(batch * n_alleles, allele_len)
             core_encoded = self.core_encoder(self.embedding(core_flat))
-            allele_encoded = self.allele_encoder(self.embedding(allele_flat))
+            allele_emb = self.embedding(allele_flat)
+            if self.use_chain_boundary:
+                seg_emb = self.chain_segment_emb(self._segment_ids[:allele_len])
+                allele_emb = allele_emb + seg_emb[None, :, :]
+            allele_encoded = self.allele_encoder(allele_emb)
 
             core_pairs = core_encoded.reshape(batch, n_cores, core_len, -1)
             allele_pairs = allele_encoded.reshape(batch, n_alleles, allele_len, -1)

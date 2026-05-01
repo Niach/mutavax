@@ -309,6 +309,8 @@ class TrainConfig:
     locus_upweight: str = "none"  # "none" | "balanced" | "inverse_frequency" | "sqrt_inverse"
     inverted_dp: bool = False  # also score reversed peptides for DP records (recipe-mandated for HLA-DP)
     use_length_features: bool = False  # concat (n_cores, N-term offset, C-term distance) into per-(core,allele) fused vector before the scorer; targets the long-peptide degradation
+    use_chain_boundary: bool = False  # add a learned α/β segment embedding to per-residue allele features; targets the DP/DQ heterodimer weakness
+    alpha_chain_length: int = 15  # NetMHCIIpan-4.3 pseudoseq layout: positions 0-14 = α-chain, 15-33 = β-chain
     # NetMHCIIpan_eval.fa FRANK sentinel — if set, a stratified subset of the
     # 842 published CD4+ epitopes is scored after each epoch's checkpoint
     # write. The result lands in history.json under sentinel_* keys; it does
@@ -631,6 +633,8 @@ def train(config: TrainConfig) -> Path:
             "with_ba_head": config.multi_task_ba,
             "allele_aggregation": config.allele_aggregation,
             "use_length_features": config.use_length_features,
+            "use_chain_boundary": config.use_chain_boundary,
+            "alpha_chain_length": config.alpha_chain_length,
         }
         model = MHCIIESMModel(**model_config).to(device)
         n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -651,6 +655,8 @@ def train(config: TrainConfig) -> Path:
             "with_ba_head": config.multi_task_ba,
             "allele_aggregation": config.allele_aggregation,
             "use_length_features": config.use_length_features,
+            "use_chain_boundary": config.use_chain_boundary,
+            "alpha_chain_length": config.alpha_chain_length,
         }
         model = MHCIIInteractionModel(**model_config).to(device)
         n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
