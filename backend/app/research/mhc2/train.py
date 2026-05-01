@@ -288,6 +288,12 @@ class TrainConfig:
     early_stop_metric: str = "val_auc"  # "val_auc" (legacy) or "sentinel_frank" (lower is better; requires --eval-fa-sentinel)
     grad_clip: float = 0.0  # if > 0, clip grad-norm to this value (recipe-mandated stability for FRANK-aligned training)
     grad_accum_steps: int = 1  # >1 enables gradient accumulation: effective batch = batch_size * grad_accum_steps
+    # FRANK-aligned objective: pairwise hinge ranking loss on EL pairs. Every
+    # positive in a batch is pushed above every negative by a logit margin.
+    # 0.0 disables (BCE-only legacy). When using mined hard negatives this is
+    # where the FRANK signal lives.
+    ranking_loss_weight: float = 0.0
+    ranking_loss_margin: float = 1.0
     embedding_dim: int = 96
     hidden_dim: int = 128
     attention_heads: int = 4
@@ -358,6 +364,8 @@ def _multi_task_loss(
     else:
         el_term = sample_logits.sum() * 0.0  # zero with grad
 
+    total = el_term
+
     if config.multi_task_ba and len(model_out) >= 3 and ba_mask.any():
         ba_logits = model_out[2]
         ba_pred = _torch.sigmoid(ba_logits)
@@ -367,8 +375,25 @@ def _multi_task_loss(
         if locus_weights is not None and config.locus_upweight != "none":
             ba_loss = ba_loss * locus_weights
         ba_term = ba_loss[ba_mask].mean()
-        return el_term + config.ba_loss_weight * ba_term
-    return el_term
+        total = total + config.ba_loss_weight * ba_term
+
+    if config.ranking_loss_weight > 0:
+        # In-batch pairwise hinge: every EL positive should rank above every
+        # EL negative in the batch by at least ``ranking_loss_margin``. Loss
+        # is computed in logit space so it's scale-aware (margin=1 at sigmoid
+        # corresponds roughly to a logit gap of 1; tune via the flag).
+        pos_mask = el_mask & (labels > 0.5)
+        neg_mask = el_mask & (labels <= 0.5)
+        if pos_mask.any() and neg_mask.any():
+            pos_logits = sample_logits[pos_mask]  # [P]
+            neg_logits = sample_logits[neg_mask]  # [N]
+            margins = (
+                config.ranking_loss_margin - pos_logits.unsqueeze(1) + neg_logits.unsqueeze(0)
+            )
+            rank_term = margins.clamp(min=0).mean()
+            total = total + config.ranking_loss_weight * rank_term
+
+    return total
 
 
 def _resolve_device(requested: str) -> str:

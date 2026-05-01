@@ -117,6 +117,13 @@ def main() -> None:
     parser.add_argument("--grad-accum-steps", type=int, default=1,
                         help="Gradient-accumulation steps. Effective batch size = "
                              "--batch-size * --grad-accum-steps.")
+    parser.add_argument("--ranking-loss-weight", type=float, default=0.0,
+                        help="Weight on in-batch pairwise hinge ranking loss "
+                             "score(pos) > score(neg) + margin. 0 disables (BCE-only "
+                             "legacy). Recipe target ~1.0 once hard SwissProt negatives "
+                             "are mined and replace random decoys.")
+    parser.add_argument("--ranking-loss-margin", type=float, default=1.0,
+                        help="Logit-space margin for the ranking hinge.")
     args = parser.parse_args()
 
     checkpoint = train(
@@ -168,6 +175,8 @@ def main() -> None:
             early_stop_metric=args.early_stop_metric,
             grad_clip=args.grad_clip,
             grad_accum_steps=args.grad_accum_steps,
+            ranking_loss_weight=args.ranking_loss_weight,
+            ranking_loss_margin=args.ranking_loss_margin,
         )
     )
     print(checkpoint)
