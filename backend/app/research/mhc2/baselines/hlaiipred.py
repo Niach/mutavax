@@ -51,6 +51,7 @@ class HLAIIPredAdapter(BaselineModel):
             self._mhc2_dir = mhc2_dir
         self._device = device
         self._batch_size = batch_size
+        self._predictors = None
 
     def is_available(self) -> tuple[bool, str]:
         if not self._model_dir or not self._mhc2_dir:
@@ -85,13 +86,8 @@ class HLAIIPredAdapter(BaselineModel):
             raise RuntimeError(msg)
         import numpy as np
         from collections import defaultdict
-        from hlapred.predict import HLAIIPredict
 
-        device = self._resolve_device()
-        predictors = [
-            HLAIIPredict(self._model_dir, idx, device, self._mhc2_dir)
-            for idx in (0, 1)
-        ]
+        predictors = self._load_predictors()
 
         # Group by HLAIIPred-formatted allele so an unsupported allele only
         # NaNs out its own group instead of crashing the whole batch.
@@ -140,6 +136,17 @@ class HLAIIPredAdapter(BaselineModel):
                     )
 
         return [item for item in out if item is not None]
+
+    def _load_predictors(self):
+        if self._predictors is None:
+            from hlapred.predict import HLAIIPredict
+
+            device = self._resolve_device()
+            self._predictors = [
+                HLAIIPredict(self._model_dir, idx, device, self._mhc2_dir)
+                for idx in (0, 1)
+            ]
+        return self._predictors
 
 
 def _to_hlaiipred_allele(allele: str) -> str:
