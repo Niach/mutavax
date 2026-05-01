@@ -308,6 +308,7 @@ class TrainConfig:
     dynamic_decoys: bool = False  # regenerate decoys at the start of each epoch (HLAIIPred protocol)
     locus_upweight: str = "none"  # "none" | "balanced" | "inverse_frequency" | "sqrt_inverse"
     inverted_dp: bool = False  # also score reversed peptides for DP records (recipe-mandated for HLA-DP)
+    use_length_features: bool = False  # concat (n_cores, N-term offset, C-term distance) into per-(core,allele) fused vector before the scorer; targets the long-peptide degradation
     # NetMHCIIpan_eval.fa FRANK sentinel — if set, a stratified subset of the
     # 842 published CD4+ epitopes is scored after each epoch's checkpoint
     # write. The result lands in history.json under sentinel_* keys; it does
@@ -629,6 +630,7 @@ def train(config: TrainConfig) -> Path:
             "dropout": config.dropout,
             "with_ba_head": config.multi_task_ba,
             "allele_aggregation": config.allele_aggregation,
+            "use_length_features": config.use_length_features,
         }
         model = MHCIIESMModel(**model_config).to(device)
         n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -648,6 +650,7 @@ def train(config: TrainConfig) -> Path:
             "dropout": config.dropout,
             "with_ba_head": config.multi_task_ba,
             "allele_aggregation": config.allele_aggregation,
+            "use_length_features": config.use_length_features,
         }
         model = MHCIIInteractionModel(**model_config).to(device)
         n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

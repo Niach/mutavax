@@ -83,6 +83,12 @@ def main() -> None:
                              "pick the best orientation. Recipe-mandated for 2026 SOTA on "
                              "DP. Requires a peptides_rev.bin cache built with "
                              "scripts/mhc2_build_esm_cache.py --build-reversed.")
+    parser.add_argument("--use-length-features", action="store_true",
+                        help="Concatenate three scalars (peptide n_cores, N-term offset, "
+                             "C-term distance) into the per-(core, allele) fused vector "
+                             "before the scorer. Targets the long-peptide (≥20 aa) "
+                             "FRANK degradation. Adds 3 input dims to the scorer; "
+                             "checkpoints record the flag so predictor reloads match.")
     parser.add_argument("--eval-fa-sentinel", type=Path, default=None,
                         help="Path to NetMHCIIpan_eval.fa. If set, a stratified subset is "
                              "scored after each epoch and merged into history.json under "
@@ -132,6 +138,7 @@ def main() -> None:
             dynamic_decoys=args.dynamic_decoys,
             locus_upweight=args.locus_upweight,
             inverted_dp=args.inverted_dp,
+            use_length_features=args.use_length_features,
             eval_fa_sentinel_path=args.eval_fa_sentinel,
             eval_fa_sentinel_n=args.eval_fa_sentinel_n,
             eval_fa_sentinel_seed=args.eval_fa_sentinel_seed,

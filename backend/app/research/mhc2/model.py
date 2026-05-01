@@ -62,6 +62,38 @@ def enumerate_cores(peptide: str, core_length: int = 9) -> list[tuple[int, str]]
 
 if TORCH_AVAILABLE:  # pragma: no cover
 
+    _LENGTH_FEATURE_SCALE = 20.0
+
+    def _length_features(
+        core_mask: Tensor, n_cores: int, n_alleles: int
+    ) -> Tensor:
+        """Per-(sample, core, allele) length signals built from ``core_mask``.
+
+        Returns ``[batch * n_cores * n_alleles, 3]`` matching the order
+        ``fused`` is laid out in (sample-major, core-major, allele-minor).
+        Channels: peptide n_cores, N-term offset, C-term distance — all
+        divided by ~typical max length so values stay roughly in [0, 1.5].
+        Padded core slots get arbitrary values (the scorer's output is masked
+        before the max-over-cores step).
+        """
+        batch = core_mask.shape[0]
+        n_cores_per_sample = core_mask.sum(dim=1).float()  # [batch]
+        core_idx = torch.arange(
+            n_cores, dtype=torch.float32, device=core_mask.device
+        )
+        core_idx_b = core_idx.unsqueeze(0).expand(batch, n_cores)
+        n_cores_b = n_cores_per_sample.unsqueeze(1).expand(batch, n_cores)
+        length_feat = n_cores_b / _LENGTH_FEATURE_SCALE
+        n_term_feat = core_idx_b / _LENGTH_FEATURE_SCALE
+        c_term_feat = (n_cores_b - 1.0 - core_idx_b).clamp(min=0.0) / _LENGTH_FEATURE_SCALE
+        feat = torch.stack([length_feat, n_term_feat, c_term_feat], dim=-1)  # [batch, n_cores, 3]
+        return (
+            feat.unsqueeze(2)
+            .expand(batch, n_cores, n_alleles, 3)
+            .reshape(-1, 3)
+        )
+
+
     class MHCIIESMModel(nn.Module):
         """Phase B model: frozen ESM-2 features + small adapter on each branch.
 
@@ -85,6 +117,7 @@ if TORCH_AVAILABLE:  # pragma: no cover
             dropout: float = 0.1,
             with_ba_head: bool = False,
             allele_aggregation: str = "max",
+            use_length_features: bool = False,
         ) -> None:
             super().__init__()
             self.esm_dim = esm_dim
@@ -95,6 +128,8 @@ if TORCH_AVAILABLE:  # pragma: no cover
                     f"allele_aggregation must be 'max' or 'logsumexp', got {allele_aggregation!r}"
                 )
             self.allele_aggregation = allele_aggregation
+            self.use_length_features = use_length_features
+            scorer_in = esm_dim * 3 + (3 if use_length_features else 0)
             self.core_adapter = nn.TransformerEncoder(
                 nn.TransformerEncoderLayer(
                     d_model=esm_dim,
@@ -119,7 +154,7 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 esm_dim, adapter_heads, dropout=dropout, batch_first=True
             )
             self.scorer = nn.Sequential(
-                nn.Linear(esm_dim * 3, adapter_hidden),
+                nn.Linear(scorer_in, adapter_hidden),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(adapter_hidden, 1),
@@ -131,7 +166,7 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 # over candidate cores at the end so it's directly
                 # comparable to the IEDB log-affinity targets.
                 self.ba_scorer = nn.Sequential(
-                    nn.Linear(esm_dim * 3, adapter_hidden),
+                    nn.Linear(scorer_in, adapter_hidden),
                     nn.GELU(),
                     nn.Dropout(dropout),
                     nn.Linear(adapter_hidden, 1),
@@ -170,13 +205,20 @@ if TORCH_AVAILABLE:  # pragma: no cover
             allele_pool = allele_pairs.mean(dim=1)
             attended_pool = attended.mean(dim=1)
             fused = torch.cat([core_pool, allele_pool, attended_pool], dim=-1)
-            logits = self.scorer(fused).squeeze(-1)
-            grid = logits.reshape(batch, n_cores, n_alleles).transpose(1, 2)
 
             if core_mask is None:
                 core_mask = core_feats.abs().sum(dim=-1).ne(0).any(dim=-1)
             if allele_mask is None:
                 allele_mask = allele_feats.abs().sum(dim=-1).ne(0).any(dim=-1)
+
+            if self.use_length_features:
+                fused = torch.cat(
+                    [fused, _length_features(core_mask, n_cores, n_alleles)],
+                    dim=-1,
+                )
+
+            logits = self.scorer(fused).squeeze(-1)
+            grid = logits.reshape(batch, n_cores, n_alleles).transpose(1, 2)
             valid = allele_mask[:, :, None] & core_mask[:, None, :]
             masked_grid = grid.masked_fill(~valid, torch.finfo(grid.dtype).min)
             # Step 1: max over candidate cores within each allele -> per-allele
@@ -222,6 +264,7 @@ if TORCH_AVAILABLE:  # pragma: no cover
             dropout: float = 0.1,
             with_ba_head: bool = False,
             allele_aggregation: str = "max",
+            use_length_features: bool = False,
         ) -> None:
             super().__init__()
             self.max_pseudoseq_length = max_pseudoseq_length
@@ -231,6 +274,8 @@ if TORCH_AVAILABLE:  # pragma: no cover
                     f"allele_aggregation must be 'max' or 'logsumexp', got {allele_aggregation!r}"
                 )
             self.allele_aggregation = allele_aggregation
+            self.use_length_features = use_length_features
+            scorer_in = embedding_dim * 3 + (3 if use_length_features else 0)
             self.embedding = nn.Embedding(
                 len(VOCAB) + 1, embedding_dim, padding_idx=PAD_INDEX
             )
@@ -261,14 +306,14 @@ if TORCH_AVAILABLE:  # pragma: no cover
                 batch_first=True,
             )
             self.scorer = nn.Sequential(
-                nn.Linear(embedding_dim * 3, hidden_dim),
+                nn.Linear(scorer_in, hidden_dim),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(hidden_dim, 1),
             )
             if with_ba_head:
                 self.ba_scorer = nn.Sequential(
-                    nn.Linear(embedding_dim * 3, hidden_dim),
+                    nn.Linear(scorer_in, hidden_dim),
                     nn.GELU(),
                     nn.Dropout(dropout),
                     nn.Linear(hidden_dim, 1),
@@ -312,12 +357,17 @@ if TORCH_AVAILABLE:  # pragma: no cover
             allele_pool = allele_pairs.mean(dim=1)
             attended_pool = attended.mean(dim=1)
             fused = torch.cat([core_pool, allele_pool, attended_pool], dim=-1)
-            logits = self.scorer(fused).squeeze(-1)
-            grid = logits.reshape(batch, n_cores, n_alleles).transpose(1, 2)
             if core_mask is None:
                 core_mask = core_tokens.ne(PAD_INDEX).any(dim=-1)
             if allele_mask is None:
                 allele_mask = allele_tokens.ne(PAD_INDEX).any(dim=-1)
+            if self.use_length_features:
+                fused = torch.cat(
+                    [fused, _length_features(core_mask, n_cores, n_alleles)],
+                    dim=-1,
+                )
+            logits = self.scorer(fused).squeeze(-1)
+            grid = logits.reshape(batch, n_cores, n_alleles).transpose(1, 2)
             valid = allele_mask[:, :, None] & core_mask[:, None, :]
             masked_grid = grid.masked_fill(~valid, torch.finfo(grid.dtype).min)
             per_allele_logits = masked_grid.max(dim=2).values  # [batch, n_alleles]
