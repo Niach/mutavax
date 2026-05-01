@@ -1,11 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
 export default function TopNav() {
-  const pathname = usePathname() ?? "/";
   const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
@@ -15,16 +13,10 @@ export default function TopNav() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  const isHome = pathname === "/";
-  const isArchive = pathname.startsWith("/archive");
-  const isMission = pathname.startsWith("/mission");
-
   return (
     <nav className={"top" + (scrolled ? " scrolled" : "")}>
       <div className="nav-left">
-        <Link href="/" className={isHome ? "active" : ""}>Overview</Link>
-        <Link href="/archive" className={isArchive ? "active" : ""}>Archive</Link>
-        <Link href="/mission" className={isMission ? "active" : ""}>Mission</Link>
+        <Link href="/" className="active">Overview</Link>
       </div>
       <div className="nav-right">
         <a className="cta" href="https://github.com/niach/mutavax" target="_blank" rel="noreferrer" aria-label="GitHub repository">

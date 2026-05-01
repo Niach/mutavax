@@ -8,8 +8,6 @@ export default function SiteFooter() {
       </div>
       <div className="links">
         <Link href="/">Overview</Link>
-        <Link href="/archive">Archive</Link>
-        <Link href="/mission">Mission</Link>
         <a href="https://github.com/niach/mutavax" target="_blank" rel="noreferrer">GitHub</a>
       </div>
     </footer>
