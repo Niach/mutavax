@@ -124,6 +124,11 @@ def main() -> None:
                              "are mined and replace random decoys.")
     parser.add_argument("--ranking-loss-margin", type=float, default=1.0,
                         help="Logit-space margin for the ranking hinge.")
+    parser.add_argument("--hard-negatives-jsonl", type=Path, default=None,
+                        help="Pre-mined hard SwissProt negatives "
+                             "(scripts/mhc2_mine_hard_negatives.py output). "
+                             "When set, replaces the length-matched random decoys "
+                             "and disables --dynamic-decoys for the training set.")
     args = parser.parse_args()
 
     checkpoint = train(
@@ -177,6 +182,7 @@ def main() -> None:
             grad_accum_steps=args.grad_accum_steps,
             ranking_loss_weight=args.ranking_loss_weight,
             ranking_loss_margin=args.ranking_loss_margin,
+            hard_negatives_jsonl=args.hard_negatives_jsonl,
         )
     )
     print(checkpoint)

@@ -294,6 +294,11 @@ class TrainConfig:
     # where the FRANK signal lives.
     ranking_loss_weight: float = 0.0
     ranking_loss_margin: float = 1.0
+    # Replace length-matched random decoys with pre-mined hard SwissProt
+    # negatives (output of scripts/mhc2_mine_hard_negatives.py). When set,
+    # ``--decoys-per-positive`` and ``--dynamic-decoys`` are ignored for the
+    # training set.
+    hard_negatives_jsonl: Path | None = None
     embedding_dim: int = 96
     hidden_dim: int = 128
     attention_heads: int = 4
@@ -541,7 +546,17 @@ def train(config: TrainConfig) -> Path:
         read_fasta_sequences(config.proteome_fasta) if config.proteome_fasta is not None else None
     )
     positive_9mers = positive_9mer_index(train_positives) if proteome is not None else None
-    if proteome is not None:
+    if config.hard_negatives_jsonl is not None:
+        hard_negs = _records_with_pseudosequences(
+            list(read_jsonl(config.hard_negatives_jsonl)), pseudosequences
+        )
+        train_records = train_positives + hard_negs
+        print(
+            f"[train] hard SwissProt negatives loaded: {len(hard_negs):,} "
+            f"(replaces length-matched random decoys)",
+            flush=True,
+        )
+    elif proteome is not None:
         decoys, decoy_stats = sample_length_matched_decoys(
             train_positives,
             proteome,
@@ -826,7 +841,12 @@ def train(config: TrainConfig) -> Path:
     best_metric = float("-inf")
     epochs_without_improvement = 0
     for epoch in range(1, config.epochs + 1):
-        if config.dynamic_decoys and proteome is not None and epoch > 1:
+        if (
+            config.dynamic_decoys
+            and config.hard_negatives_jsonl is None
+            and proteome is not None
+            and epoch > 1
+        ):
             decoys, ds = sample_length_matched_decoys(
                 train_positives,
                 proteome,
